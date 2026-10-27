@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M1S · PO Recap</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+:root{
+  --ink:#16202c; --muted:#5f6c7d; --faint:#8a96a6;
+  --glass:rgba(255,255,255,.62); --edge:rgba(255,255,255,.75);
+  --shadow:0 8px 32px rgba(31,45,75,.12);
+  --accentink:#1b6fae; --grid:rgba(95,108,125,.16);
+  --good:#2f7d4f; --good-soft:rgba(63,125,88,.15);
+  --warn:#9a6b2f; --warn-soft:rgba(154,107,47,.13);
+  --bad:#b4452f; --bad-soft:rgba(180,69,47,.12);
+  --ring:rgba(47,155,214,.18); --win:#d9eaf7; --fz:#f7fafd;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  font-size:14px;line-height:1.45;color:var(--ink);
+  background:linear-gradient(135deg,#e8f0fa 0%,#f3eef9 45%,#eaf6f1 100%);
+  background-attachment:fixed;-webkit-font-smoothing:antialiased;
+}
+#app{height:100%;display:flex;flex-direction:column}
+.topbar{
+  display:flex;align-items:center;gap:14px;padding:10px 18px;flex:0 0 auto;
+  background:var(--glass);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);
+  border-bottom:1px solid var(--edge);box-shadow:0 2px 14px rgba(31,45,75,.06);
+}
+.brand{font-weight:700;font-size:15px;color:var(--ink);text-decoration:none}
+.spacer{flex:1}
+.who{font-size:12.5px;color:var(--muted)}
+button{font-family:inherit;cursor:pointer}
+.btn{font-size:12.5px;font-weight:600;padding:8px 13px;border-radius:11px;border:1px solid var(--edge);background:rgba(255,255,255,.75);color:var(--ink);white-space:nowrap}
+.btn:hover{background:#fff}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.primary{color:#fff;background:linear-gradient(135deg,#2f9bd6,#1b6fae)}
+.btn.sm{padding:6px 10px;font-size:11.5px}
+.btn.danger{color:var(--bad)}
+.btn.danger.solid{background:var(--bad);color:#fff}
+.icon{border:none;background:none;padding:3px 7px;border-radius:7px;color:var(--muted);line-height:1;font-size:13px}
+.icon:hover{background:rgba(255,255,255,.9);color:var(--bad)}
+a{color:var(--accentink)}
+.main{flex:1;overflow:auto;padding:18px 20px 40px}
+.wrap{max-width:1680px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.card{background:var(--glass);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid var(--edge);border-radius:18px;box-shadow:var(--shadow);min-width:0}
+.card-hd{padding:11px 16px;border-bottom:1px solid var(--grid);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.card-hd h2{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.card-bd{padding:14px 16px}
+input,select{font-family:inherit;font-size:13px;color:var(--ink);background:rgba(255,255,255,.8);border:1px solid var(--edge);border-radius:11px;padding:8px 12px;width:100%;outline:none}
+input:focus,select:focus{background:#fff;box-shadow:0 0 0 3px var(--ring)}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--accentink);cursor:pointer;padding:0}
+select.sm{width:auto;padding:6px 10px;font-size:12px}
+label.fld{display:flex;flex-direction:column;gap:5px;min-width:0}
+label.fld > span,.lbl{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.hint{font-size:11.5px;color:var(--muted)}
+.save{font-size:11.5px;color:var(--muted);max-width:520px;text-align:right}
+.save.err{color:var(--bad);font-weight:600}
+.empty{padding:34px 16px;text-align:center;color:var(--muted);font-size:13px}
+.spin{width:15px;height:15px;border:2px solid var(--ring);border-top-color:var(--accentink);border-radius:50%;animation:sp .8s linear infinite;flex:0 0 auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+.inline-load{display:flex;align-items:center;gap:9px;padding:16px;color:var(--muted);font-size:12.5px}
+.gate{position:fixed;inset:0;z-index:5;display:flex;align-items:center;justify-content:center}
+.gate .card{padding:32px 40px;text-align:center;display:flex;flex-direction:column;gap:15px;align-items:center;max-width:440px}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}*{transition:none!important}}
+
+/* ---------- new buy ---------- */
+.imp{display:flex;gap:14px;align-items:stretch;padding:12px 14px;flex-wrap:wrap}
+.imp .cust{flex:0 0 240px}
+.drop{flex:1 1 420px;display:flex;align-items:center;gap:12px;border:1.5px dashed rgba(95,108,125,.38);border-radius:14px;padding:10px 14px;cursor:pointer;background:rgba(255,255,255,.35)}
+.drop:hover,.drop.over{border-color:var(--accentink);background:rgba(47,155,214,.07)}
+.drop.off{cursor:not-allowed;opacity:.55}
+.drop.off:hover{border-color:rgba(95,108,125,.38);background:rgba(255,255,255,.35)}
+.drop b{font-size:13px}
+.drop .hint{display:block;margin-top:1px}
+.drop .arrow{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#2f9bd6,#1b6fae);color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;flex:0 0 auto}
+.job{padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}
+.job:empty{display:none}
+.strip{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;padding:10px 14px;border-radius:14px;background:rgba(255,255,255,.55);border:1px solid var(--edge);font-size:12.5px}
+.strip.ok{background:var(--good-soft);color:var(--good)}
+.strip.err{background:var(--bad-soft);color:var(--bad)}
+.strip.warn{background:var(--warn-soft);color:var(--warn)}
+.strip.busy{align-items:center}
+.strip ul{list-style:none;display:flex;flex-direction:column;gap:3px;width:100%}
+.strip li{color:var(--ink)}
+.strip li .why{color:inherit}
+.strip.err li .why{color:var(--bad)}
+.strip b{font-weight:700}
+.row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.row .grow{flex:1 1 320px}
+
+/* ---------- tables ---------- */
+table.t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+.t th{font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--grid);white-space:nowrap}
+.t td{padding:7px 10px;border-bottom:1px solid var(--grid);white-space:nowrap}
+.t tr:last-child td{border-bottom:0}
+.t .n{text-align:right}
+.t tbody tr:hover td{background:rgba(255,255,255,.5)}
+.t td.c{width:34px}
+.t a.open{font-weight:600;text-decoration:none}
+.t a.open:hover{text-decoration:underline}
+.badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--warn-soft);color:var(--warn)}
+.badge.none{background:none;color:var(--faint);font-weight:500}
+.tw{overflow:auto}
+
+/* ---------- a buy ---------- */
+.back{font-size:12.5px;font-weight:600;text-decoration:none}
+.head{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;padding:14px 16px}
+.head .name{flex:1 1 380px}
+.head .name input{font-size:20px;font-weight:700;padding:6px 10px}
+.meta{padding:0 16px 14px;font-size:12.5px;color:var(--muted)}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}
+.kpi{padding:13px 16px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.kpi .v{font-size:23px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .s{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pair{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:14px}
+@media (max-width:1100px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.pair{grid-template-columns:1fr}}
+.flags{list-style:none;padding:10px 16px 14px;display:flex;flex-direction:column;gap:6px;font-size:12.5px}
+.flags li{display:flex;gap:9px;align-items:flex-start}
+.flags li::before{content:"⚑";color:var(--warn)}
+
+/* the recap grid: its own scroll pane, three sticky heading rows, Style / Description / Cost frozen */
+.tbl-scroll{overflow:auto;max-height:calc(100vh - 150px);border-radius:0 0 18px 18px}
+table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-numeric:tabular-nums;min-width:100%}
+.g th,.g td{padding:5px 9px;border-bottom:1px solid var(--grid);border-right:1px solid var(--grid);white-space:nowrap;background:#fbfcfe}
+.g thead th{position:sticky;z-index:3;background:#f0f5fb;font-size:10.5px;font-weight:700;color:var(--muted);height:27px;text-align:center}
+.g thead tr.h0 th{top:0}
+.g thead tr.h1 th{top:27px}
+.g thead tr.h2 th{top:54px}
+.g thead th.win{background:var(--win);color:var(--ink)}
+.g thead th.lab{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;vertical-align:bottom;padding-bottom:8px}
+.g thead tr.h2 a{font-weight:700;text-decoration:none;color:var(--ink)}
+.g thead tr.h2 a:hover{color:var(--accentink);text-decoration:underline}
+.g .fz{position:sticky;z-index:2;background:var(--fz)}
+.g thead .fz{z-index:4;background:#f0f5fb}
+.g .c-style{left:0;min-width:108px;max-width:108px}
+.g .c-desc{left:108px;min-width:250px;max-width:250px;overflow:hidden;text-overflow:ellipsis}
+.g .c-cost{left:358px;min-width:74px;max-width:74px;box-shadow:inset -2px 0 0 var(--grid)}
+.g td.n,.g th.n{text-align:right}
+.g td.n.blank{color:var(--faint)}
+.g td.tot{font-weight:700}
+.g tfoot td{position:sticky;bottom:0;z-index:2;background:#e8eff8;font-weight:700}
+.g tfoot td.fz{z-index:3;background:#e8eff8}
+.g td.note{padding:2px 4px;min-width:240px}
+.g input.note{padding:4px 8px;font-size:12px;border-radius:8px;border-color:transparent;background:transparent}
+.g input.note:hover{border-color:var(--edge);background:rgba(255,255,255,.7)}
+.g input.note:focus{background:#fff;border-color:var(--edge)}
+.g .flag{color:var(--warn);margin-left:4px;cursor:help}
+
+/* confirm */
+.modal{position:fixed;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(22,32,44,.28)}
+.modal[hidden]{display:none}
+.modal .card{background:#fff;padding:22px 24px;max-width:460px;display:flex;flex-direction:column;gap:12px}
+.modal h3{font-size:16px}
+.modal p{font-size:13px;color:var(--muted)}
+.modal .row{justify-content:flex-end}
+</style>
+</head>
+<body>
+
+<div class="gate" id="gate">
+  <div class="card">
+    <div class="brand">PO Recap</div>
+    <div class="hint">Customer POs, read and summarized by buy</div>
+    <div id="gateMsg" class="inline-load"><div class="spin"></div>Loading…</div>
+    <button class="btn primary" id="signIn" style="display:none">Sign in with Microsoft</button>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <header class="topbar">
+    <a class="brand" href="#/">PO Recap</a>
+    <div class="spacer"></div>
+    <span class="save" id="saveSt" role="status" aria-live="polite"></span>
+    <span class="who" id="whoName"></span>
+    <button class="btn sm" id="signOut">Sign out</button>
+  </header>
+  <main class="main"><div class="wrap" id="view"></div></main>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="card" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <h3 id="mTitle"></h3>
+    <p id="mBody"></p>
+    <div class="row"><button class="btn" id="mCancel">Cancel</button><button class="btn danger solid" id="mOk"></button></div>
+  </div>
+</div>
+
+<input type="file" id="filePick" accept="application/pdf,.pdf" multiple style="display:none">
+
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="recap.js"></script>
+<script>
+"use strict";
+/* ============================== CONFIG ============================== */
+const CFG = {
+  clientId: "5e8dbb95-95e7-4386-8dfd-c131fe42532a",          // the hub tools' app registration
+  tenantId: "eeea7e3e-9ccb-4a16-894e-3417c6a7a4c1",
+  host    : "met1sol.sharepoint.com",
+  scopes  : ["User.Read", "Sites.ReadWrite.All"],
+  site    : "/sites/Production",
+  drive   : "Documents",
+  root    : "PO Recap",                                       // index.json, Buys/<id>.json, Buys/<id>/<PO #>.pdf
+  admins  : ["saul@metro1solutions.com"],                     // only these sign-ins see Delete and Remove
+  pdfWorker: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"
+};
+const G = "https://graph.microsoft.com/v1.0";
+const PATHS = {
+  index: CFG.root + "/index.json",
+  buys : CFG.root + "/Buys",
+  buy  : id => CFG.root + "/Buys/" + id + ".json",
+  dir  : id => CFG.root + "/Buys/" + id,
+  pdf  : (id, po) => CFG.root + "/Buys/" + id + "/" + po + ".pdf"
+};
+const R = window.Recap;
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const encPath = p => p.split("/").map(encodeURIComponent).join("/");
+const errMsg = e => (e && e.message) || String(e);
+const isAdmin = () => !!(S.acct && CFG.admins.indexOf(String(S.acct.username || "").toLowerCase()) >= 0);
+const me = () => (S.acct && (S.acct.name || S.acct.username)) || "";
+const dayOf = t => { const d = new Date(t); return isNaN(d) ? "" : (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear(); };
+const LS = {
+  get(k, d){ try { const v = localStorage.getItem("porecap." + k); return v == null ? d : JSON.parse(v); } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem("porecap." + k, JSON.stringify(v)); } catch(e){} }
+};
+
+/* ============================== STATE =============================== */
+const S = {
+  acct:null, driveId:null,
+  index:null,                 // { v, buys:[entry] }, newest read of index.json
+  view:"home", buy:null, buyTag:null,
+  job:null,                   // a read / check / save in progress: { kind:"new"|"add", key, files, phase, ... }
+  adding:false,               // the buy page's Add POs panel is open
+  sel:new Set(), filter:LS.get("filter", ""),
+  base:new Map(), timers:new Map(), chain:Promise.resolve()
+};
+
+/* ============================== MSAL ================================ */
+const redirectUri = window.location.origin + window.location.pathname;
+const framed = (function(){ try { return window.self !== window.top; } catch(e){ return true; } })();
+let msalApp = null;
+async function getToken(){
+  const r = await msalApp.acquireTokenSilent({ scopes:CFG.scopes, account:S.acct })
+    .catch(async () => framed
+      ? msalApp.acquireTokenPopup({ scopes:CFG.scopes })
+      : (msalApp.acquireTokenRedirect({ scopes:CFG.scopes }), new Promise(() => {})));
+  return r.accessToken;
+}
+
+/* ============================== GRAPH =============================== */
+async function gf(path, opts){
+  opts = opts || {};
+  const tok = await getToken();
+  const h = Object.assign({ Authorization:"Bearer " + tok }, opts.headers || {});
+  if (opts.body && typeof opts.body === "string" && !h["Content-Type"]) h["Content-Type"] = "application/json";
+  const res = await fetch(/^https?:/.test(path) ? path : G + path, { method:opts.method || "GET", headers:h, body:opts.body });
+  if (res.status === 429 || res.status === 503){
+    await new Promise(r => setTimeout(r, parseInt(res.headers.get("Retry-After") || "3", 10) * 1000));
+    return gf(path, opts);
+  }
+  if (!res.ok){
+    const txt = await res.text().catch(() => "");
+    const err = new Error("SharePoint said " + res.status + ": " + txt.slice(0, 240));
+    err.status = res.status; throw err;
+  }
+  if (res.status === 204 || res.status === 202) return null;
+  return (res.headers.get("Content-Type") || "").indexOf("json") >= 0 ? res.json() : null;
+}
+async function gAll(path){
+  const out = []; let next = path;
+  while (next){ const p = await gf(next); if (p && p.value) out.push.apply(out, p.value); next = p && p["@odata.nextLink"]; }
+  return out;
+}
+const itemUrl = p => "/drives/" + S.driveId + "/root:/" + encPath(p);
+async function resolveDrive(){
+  try {
+    const s = await gf("/sites/" + CFG.host + ":" + CFG.site + "?$select=id");
+    const drives = await gAll("/sites/" + s.id + "/drives?$select=id,name");
+    const d = drives.find(x => x.name === CFG.drive) || drives[0];
+    if (!d) throw new Error("No document library on " + CFG.site);
+    S.driveId = d.id;
+  } catch(e){ e.site = CFG.site; throw e; }
+}
+/* JSON files: read through the pre-authenticated downloadUrl (a /content 302 is blocked by CORS), with their eTag */
+async function readJson(path){
+  let it;
+  try { it = await gf(itemUrl(path)); } catch(e){ if (e.status === 404) return null; throw e; }
+  const r = await fetch(it["@microsoft.graph.downloadUrl"], { cache:"no-store" });
+  if (!r.ok) throw new Error("Download " + r.status + " for " + path);
+  return { data:await r.json(), etag:it.eTag };
+}
+const madeDirs = new Set();
+async function ensurePath(dir){
+  const at = p => itemUrl(p);
+  let cur = "";
+  for (const seg of dir.split("/").filter(Boolean)){
+    const parent = cur; cur = cur ? cur + "/" + seg : seg;
+    if (madeDirs.has(cur)) continue;
+    try { await gf(at(cur) + "?$select=id"); }
+    catch(e){
+      if (e.status !== 404) throw e;
+      try {
+        await gf(parent ? at(parent) + ":/children" : "/drives/" + S.driveId + "/root/children",
+          { method:"POST", body:JSON.stringify({ name:seg, folder:{}, "@microsoft.graph.conflictBehavior":"fail" }) });
+      } catch(e2){ if (e2.status !== 409) throw e2; }
+    }
+    madeDirs.add(cur);
+  }
+}
+/* If-Match when we hold an eTag, create-only when we don't: someone else's save in between is a 412, never overwritten */
+async function writeJson(path, data, etag){
+  await ensurePath(path.slice(0, path.lastIndexOf("/")));
+  const h = { "Content-Type":"text/plain" };
+  if (etag) h["If-Match"] = etag;
+  const q = etag ? "" : "?@microsoft.graph.conflictBehavior=fail";
+  try {
+    const it = await gf(itemUrl(path) + ":/content" + q, { method:"PUT", headers:h, body:JSON.stringify(data) });
+    return it && it.eTag;
+  } catch(e){ if (e.status === 409) e.status = 412; throw e; }
+}
+async function delItem(path){ try { await gf(itemUrl(path), { method:"DELETE" }); } catch(e){ if (e.status !== 404) throw e; } }
+async function uploadPdf(path, file){
+  if (file.size <= 4 * 1024 * 1024)
+    return gf(itemUrl(path) + ":/content?@microsoft.graph.conflictBehavior=replace", { method:"PUT", headers:{ "Content-Type":"application/pdf" }, body:file });
+  const s = await gf(itemUrl(path) + ":/createUploadSession", { method:"POST", body:JSON.stringify({ item:{ "@microsoft.graph.conflictBehavior":"replace" } }) });
+  const CHUNK = 320 * 1024 * 16;
+  for (let at = 0; at < file.size; at += CHUNK){
+    const end = Math.min(at + CHUNK, file.size);
+    const r = await fetch(s.uploadUrl, { method:"PUT", headers:{ "Content-Range":"bytes " + at + "-" + (end - 1) + "/" + file.size }, body:file.slice(at, end) });
+    if (!r.ok) throw new Error("Upload of " + file.name + " stopped (" + r.status + ")");
+    if (end === file.size) return r.json();
+  }
+}
+
+/* ============================== THE BUYS LIST (index.json) ============================== */
+const normIndex = d => ({ v:1, buys:(d && Array.isArray(d.buys)) ? d.buys : [] });
+function entryOf(b){
+  const rc = R.recap(b);
+  return { id:b.id, name:b.name, customer:b.customer, created:b.created, by:b.by, updated:b.updated,
+           pos:b.pos.map(p => p.po), units:rc.total.units, cost:rc.total.ext, flags:R.flags(b.customer, b.pos).length };
+}
+async function loadIndex(){
+  const got = await readJson(PATHS.index);
+  if (got){ S.index = normIndex(got.data); return; }
+  // no list yet: build it from the buy files, if there are any
+  let kids = [];
+  try { kids = await gAll(itemUrl(PATHS.buys) + ":/children?$select=name,file"); } catch(e){ if (e.status !== 404) throw e; }
+  const buys = [];
+  for (const k of kids.filter(k => k.file && /\.json$/i.test(k.name))){
+    const b = await readJson(PATHS.buys + "/" + k.name);
+    if (b && b.data && Array.isArray(b.data.pos)) buys.push(entryOf(b.data));
+  }
+  S.index = { v:1, buys };
+  if (buys.length) await updateIndex(ix => { for (const e of buys) if (!ix.buys.some(x => x.id === e.id)) ix.buys.push(e); });
+}
+/* Read, change, write with If-Match; a 412 (someone else saved the list) reads it again and makes the change again */
+async function updateIndex(fn){
+  for (let n = 0; n < 5; n++){
+    const cur = await readJson(PATHS.index);
+    const data = normIndex(cur && cur.data);
+    fn(data);
+    try { await writeJson(PATHS.index, data, cur && cur.etag); S.index = data; return; }
+    catch(e){ if (e.status !== 412) throw e; }
+  }
+  throw new Error("The buys list kept changing while it was being saved. Reload the page.");
+}
+const putEntry = b => ix => { ix.buys = ix.buys.filter(x => x.id !== b.id); ix.buys.push(entryOf(b)); };
+
+/* ============================== A BUY FILE ============================== */
+function setBuy(data, etag){ S.buy = data; S.buyTag = etag; }
+/* Change a buy with fn(data) on its newest copy: If-Match, and on a 412 read it again and make the change again.
+   fn throws when the change can't be made on what's there now (a field someone else changed). */
+async function mutateBuy(id, fn){
+  let cur = S.buy && S.buy.id === id ? { data:S.buy, etag:S.buyTag } : await readJson(PATHS.buy(id));
+  for (let n = 0; n < 5; n++){
+    if (!cur) throw new Error("This buy isn't there any more: someone deleted it.");
+    const data = JSON.parse(JSON.stringify(cur.data));
+    fn(data);
+    data.updated = new Date().toISOString(); data.updatedBy = me();
+    try {
+      const etag = await writeJson(PATHS.buy(id), data, cur.etag);
+      if (S.buy && S.buy.id === id) setBuy(data, etag);
+      return data;
+    } catch(e){
+      if (e.status !== 412) throw e;
+      cur = await readJson(PATHS.buy(id));
+    }
+  }
+  throw new Error("The buy kept changing while it was being saved. Reload and try again.");
+}
+
+/* ============================== READING PDFs ============================== */
+const CANCELLED = new Error("Cancelled");
+async function pdfPages(file, job){
+  const doc = await pdfjsLib.getDocument({ data:new Uint8Array(await file.arrayBuffer()) }).promise;
+  try {
+    const pages = [];
+    for (let n = 1; n <= doc.numPages; n++){
+      if (job.cancelled) throw CANCELLED;
+      const page = await doc.getPage(n);
+      const tc = await page.getTextContent();
+      const items = [];
+      for (const i of tc.items) if (i.str && i.str.trim()) items.push({ s:i.str.trim(), x:i.transform[4], y:i.transform[5], w:i.width });
+      const images = [];
+      if (n === 1){
+        const ops = await page.getOperatorList();
+        ops.fnArray.forEach((fn, k) => { if (fn === pdfjsLib.OPS.paintImageXObject) images.push({ w:ops.argsArray[k][1], h:ops.argsArray[k][2] }); });
+      }
+      pages.push({ n, items, images });
+    }
+    return pages;
+  } finally { doc.destroy(); }
+}
+
+/* A job: read every file, check the batch, then wait for Save or Cancel. kind "new" makes a buy, "add" adds to S.buy. */
+async function startJob(kind, key, fileList){
+  if (S.job) return;
+  const files = new Map();
+  for (const f of fileList){
+    let name = f.name, n = 2;
+    while (files.has(name)) name = f.name.replace(/(\.pdf)?$/i, " (" + n++ + ")$1");
+    files.set(name, f);
+  }
+  if (!files.size) return;
+  const job = S.job = { kind, key, files, phase:"reading", at:0, cancelled:false, results:[] };
+  if (kind === "new") job.name = R.defaultName(R.customer(key).name, new Date());
+  renderJob();
+  try {
+    for (const [name, f] of files){
+      if (job.cancelled) throw CANCELLED;
+      job.at++; job.current = name; renderJob();
+      if (!/\.pdf$/i.test(name) && f.type !== "application/pdf"){ job.results.push({ file:name, error:"This isn't a PDF." }); continue; }
+      try { job.results.push(Object.assign({ file:name }, R.read(key, await pdfPages(f, job)))); }
+      catch(e){
+        if (e === CANCELLED) throw e;
+        job.results.push({ file:name, error:"This PDF couldn't be opened: " + errMsg(e) });
+      }
+    }
+    await recheck(job);
+    job.phase = "check";
+  } catch(e){
+    if (S.job !== job) return;
+    if (e === CANCELLED){ endJob(); return; }
+    job.phase = "check"; job.failed = errMsg(e);
+  }
+  if (S.job === job) renderJob();
+}
+/* Leaving the page a job is on stops it */
+function dropJob(){ if (S.job){ S.job.cancelled = true; S.job = null; } }
+/* The checks run against the newest buys list, so a PO someone else saved a moment ago is caught */
+async function recheck(job){
+  if (job.kind === "add" && !S.buy) throw CANCELLED;
+  await loadIndex();
+  const here = job.kind === "add" ? S.buy.pos.map(p => p.po) : [];
+  const others = S.index.buys.filter(b => !(job.kind === "add" && b.id === S.buy.id));
+  job.chk = R.checkBatch(job.results, here, others);
+}
+function endJob(){ S.job = null; renderJob(); syncDrop(); }
+
+async function saveJob(){
+  const job = S.job;
+  if (!job || job.phase !== "check" || !job.chk.accepted.length) return;
+  if (job.kind === "new"){
+    const name = ($("#jobName") && $("#jobName").value.trim()) || job.name;
+    job.name = name;
+  }
+  job.phase = "saving"; job.at = 0; job.failed = null; renderJob();
+  const before = job.chk.accepted.map(p => p.po).join();
+  try {
+    await recheck(job);
+    if (job.chk.accepted.map(p => p.po).join() !== before){
+      job.phase = "check"; job.failed = "The buys list changed while you were looking: the checks have been run again. Look them over, then save.";
+      renderJob(); return;
+    }
+    const id = job.kind === "new" ? newId() : S.buy.id;
+    const saved = [];
+    await ensurePath(PATHS.dir(id));
+    for (const p of job.chk.accepted){
+      if (job.cancelled) throw CANCELLED;
+      job.at++; renderJob();
+      const it = await uploadPdf(PATHS.pdf(id, p.po), job.files.get(p.file));
+      const rec = Object.assign({}, p, { file:{ name:p.file, path:PATHS.pdf(id, p.po), webUrl:it && it.webUrl } });
+      saved.push(rec);
+    }
+    if (job.cancelled) throw CANCELLED;
+    let buy;
+    if (job.kind === "new"){
+      const now = new Date().toISOString();
+      buy = { v:1, id, name:job.name, customer:job.key, created:now, by:me(), updated:now, updatedBy:me(), pos:saved, notes:{} };
+      await writeJson(PATHS.buy(id), buy, null);
+    } else {
+      buy = await mutateBuy(id, d => { for (const p of saved) if (!d.pos.some(x => x.po === p.po)) d.pos.push(p); });
+    }
+    await updateIndex(putEntry(buy));
+    S.job = null;
+    setSave("Saved");
+    if (job.kind === "new") location.hash = "#/buy/" + id;
+    else { S.adding = false; renderBuy(); }
+  } catch(e){
+    if (e === CANCELLED){
+      // a new buy's PDFs go; on an existing buy only the files this save added (none is in the buy yet)
+      try {
+        if (job.kind === "new"){ if (job.newId) await delItem(PATHS.dir(job.newId)); }
+        else if (S.buy) for (const p of job.chk.accepted) if (!S.buy.pos.some(x => x.po === p.po)) await delItem(PATHS.pdf(S.buy.id, p.po));
+      } catch(e2){ console.error(e2); }
+      if (S.job === job) endJob();
+      return;
+    }
+    job.phase = "check"; job.failed = "Not saved: " + errMsg(e); renderJob();
+  }
+}
+function newId(){
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  const id = "b" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + Math.random().toString(36).slice(2, 8);
+  if (S.job) S.job.newId = id;
+  return id;
+}
+
+/* ============================== RENDER: the job panel ============================== */
+function renderJob(){
+  const box = $("#job");
+  if (!box) return;
+  const job = S.job;
+  syncDrop();
+  if (!job){ box.innerHTML = ""; return; }
+  if (job.phase === "reading" || job.phase === "saving"){
+    const n = job.phase === "reading" ? job.files.size : job.chk.accepted.length;
+    const what = job.phase === "reading" ? "Reading " + job.at + " of " + n + (job.current ? " · " + esc(job.current) : "") : "Saving " + job.at + " of " + n + " PDFs to SharePoint";
+    box.innerHTML = '<div class="strip busy"><div class="spin"></div><span>' + what + '…</span><div class="spacer"></div><button class="btn sm" data-act="cancelJob">Cancel</button></div>';
+    return;
+  }
+  const chk = job.chk || { accepted:[], refused:[], notes:[] };
+  const acc = chk.accepted;
+  const pos = job.kind === "add" ? S.buy.pos.concat(acc) : acc;
+  const fl = acc.length ? R.flags(job.key, pos) : [];
+  let h = "";
+  if (job.failed) h += '<div class="strip err">' + esc(job.failed) + "</div>";
+  if (job.kind === "new")
+    h += '<div class="row"><label class="fld grow"><span>Buy name</span><input id="jobName" value="' + esc(job.name) + '" maxlength="80"></label></div>';
+  if (acc.length){
+    const rc = R.recap({ customer:job.key, pos:acc });
+    h += '<div class="strip ok"><span><b>' + acc.length + " PO" + (acc.length > 1 ? "s" : "") + "</b> ready to " + (job.kind === "new" ? "save" : "add") + " · " +
+         R.fmt(rc.total.units) + " units · " + R.money(rc.total.ext) + " · " + rc.windows.length + " ship window" + (rc.windows.length > 1 ? "s" : "") + "</span></div>";
+  } else {
+    h += '<div class="strip err"><b>None of these POs can be ' + (job.kind === "new" ? "saved" : "added") + ".</b></div>";
+  }
+  if (chk.refused.length)
+    h += '<div class="strip err"><b>' + chk.refused.length + " refused</b><ul>" + chk.refused.map(r =>
+      "<li>" + esc(r.file) + (r.po ? " · PO " + esc(r.po) : "") + ' · <span class="why">' + esc(r.why) + "</span></li>").join("") + "</ul></div>";
+  if (chk.notes.length) h += '<div class="strip"><ul>' + chk.notes.map(n => "<li>" + esc(n) + "</li>").join("") + "</ul></div>";
+  if (fl.length)
+    h += '<div class="strip warn"><b>' + fl.length + " flag" + (fl.length > 1 ? "s" : "") + (job.kind === "add" ? " on the buy once these are added" : " to look at") + "</b><ul>" +
+         fl.map(f => "<li>" + esc(f.text) + "</li>").join("") + "</ul></div>";
+  if (acc.length){
+    h += '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>Banner</th><th>Reference</th><th>Ship window</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>File</th></tr></thead><tbody>' +
+      acc.map(p => {
+        const ext = p.lines.reduce((t, l) => t + Math.round(l.units * l.cost * 100), 0) / 100;
+        return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.md(p.startShip) + "–" + R.md(p.cancel) +
+          '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(p.totalUnits) + '</td><td class="n">' + R.money(ext) + "</td><td>" + esc(p.file) + "</td></tr>";
+      }).join("") + "</tbody></table></div>";
+  }
+  h += '<div class="row"><button class="btn primary" data-act="saveJob"' + (acc.length ? "" : " disabled") + ">" + (job.kind === "new" ? "Save buy" : "Add " + acc.length + " PO" + (acc.length === 1 ? "" : "s")) +
+       '</button><button class="btn" data-act="cancelJob">Cancel</button></div>';
+  box.innerHTML = h;
+}
+
+/* ============================== RENDER: home ============================== */
+function custOptions(selected){
+  return '<option value="">Choose a customer…</option>' + R.CUSTOMERS.map(c => c.read
+    ? '<option value="' + c.key + '"' + (c.key === selected ? " selected" : "") + ">" + esc(c.name) + "</option>"
+    : '<option value="' + c.key + '" disabled>' + esc(c.name) + " (" + esc(c.soon) + ")</option>").join("");
+}
+function dropTarget(){
+  if (S.view === "home"){ const c = $("#cust"); const k = c && c.value; return k && R.customer(k) && R.customer(k).read ? k : null; }
+  if (S.view === "buy" && S.adding && S.buy){ const c = R.customer(S.buy.customer); return c && c.read ? c.key : null; }
+  return null;
+}
+function syncDrop(){
+  const c = $("#cust");
+  if (c) c.disabled = !!S.job;
+  const d = $("#drop");
+  if (!d) return;
+  const k = dropTarget(), on = !!k && !S.job;
+  d.classList.toggle("off", !on);
+  d.setAttribute("aria-disabled", on ? "false" : "true");
+  const hint = $("#dropHint");
+  if (hint) hint.textContent = S.job ? "Finish or cancel the POs below first" : k ? "Or click to pick them · " + R.customer(k).name + " POs, as many as came together" : "Pick a customer first";
+}
+async function showHome(){
+  S.view = "home"; S.buy = null; S.adding = false;
+  const keep = S.job && S.job.kind === "new" ? S.job : null;
+  if (!keep) dropJob();
+  $("#view").innerHTML =
+    '<section class="card"><div class="card-hd"><h2>New buy</h2><div class="spacer"></div><span class="hint">Pick the customer, then drop in the POs they sent together</span></div>' +
+    '<div class="imp"><label class="fld cust"><span>Customer</span><select id="cust">' + custOptions(keep ? keep.key : LS.get("customer", "")) + "</select></label>" +
+    '<div class="drop off" id="drop" tabindex="0" role="button" aria-disabled="true"><div class="arrow">↓</div><div><b>Drop the PO PDFs here</b><span class="hint" id="dropHint"></span></div></div></div>' +
+    '<div class="job" id="job"></div></section>' +
+    '<section class="card"><div class="card-hd"><h2>Buys</h2><div class="spacer"></div><select class="sm" id="filt" aria-label="Customer"><option value="">All customers</option>' +
+    R.CUSTOMERS.map(c => '<option value="' + c.key + '"' + (S.filter === c.key ? " selected" : "") + ">" + esc(c.name) + "</option>").join("") + "</select>" +
+    '<button class="btn sm" data-act="exportSel" id="exportSel" disabled>Export selected</button></div><div id="buysBox"><div class="inline-load"><div class="spin"></div>Loading the buys…</div></div></section>';
+  renderJob(); syncDrop();
+  try { await loadIndex(); renderBuys(); }
+  catch(e){ $("#buysBox").innerHTML = '<div class="empty" style="color:var(--bad)">The buys couldn\'t be loaded: ' + esc(errMsg(e)) + "</div>"; }
+}
+function renderBuys(){
+  const box = $("#buysBox");
+  if (!box || !S.index) return;
+  const list = S.index.buys.filter(b => !S.filter || b.customer === S.filter).sort((a, b) => String(b.created).localeCompare(String(a.created)));
+  for (const id of [...S.sel]) if (!S.index.buys.some(b => b.id === id)) S.sel.delete(id);
+  if (!list.length){ box.innerHTML = '<div class="empty">' + (S.index.buys.length ? "No buys for this customer yet." : "No buys yet. Pick a customer and drop in their POs to make the first one.") + "</div>"; syncSel(); return; }
+  const all = list.every(b => S.sel.has(b.id));
+  box.innerHTML = '<div class="tw"><table class="t"><thead><tr><th class="c"><input type="checkbox" data-act="selAll" aria-label="Select all"' + (all ? " checked" : "") + '></th><th>Buy</th><th>Customer</th><th>Created</th><th>By</th><th class="n">POs</th><th class="n">Units</th><th class="n">Cost</th><th>Flags</th></tr></thead><tbody>' +
+    list.map(b => '<tr><td class="c"><input type="checkbox" data-act="sel" data-id="' + esc(b.id) + '" aria-label="Select ' + esc(b.name) + '"' + (S.sel.has(b.id) ? " checked" : "") + "></td>" +
+      '<td><a class="open" href="#/buy/' + encodeURIComponent(b.id) + '">' + esc(b.name) + "</a></td><td>" + esc((R.customer(b.customer) || { name:b.customer }).name) + "</td><td>" + dayOf(b.created) +
+      "</td><td>" + esc(b.by) + '</td><td class="n">' + (b.pos || []).length + '</td><td class="n">' + R.fmt(b.units) + '</td><td class="n">' + R.money(b.cost) + "</td><td>" +
+      (b.flags ? '<span class="badge">' + b.flags + "</span>" : '<span class="badge none">none</span>') + "</td></tr>").join("") + "</tbody></table></div>";
+  syncSel();
+}
+function syncSel(){
+  const b = $("#exportSel");
+  if (b){ b.disabled = !S.sel.size; b.textContent = S.sel.size ? "Export selected (" + S.sel.size + ")" : "Export selected"; }
+}
+
+/* ============================== RENDER: a buy ============================== */
+async function openBuy(id){
+  S.view = "buy"; S.adding = false;
+  dropJob();
+  $("#view").innerHTML = '<a class="back" href="#/">‹ All buys</a><div class="card"><div class="inline-load"><div class="spin"></div>Loading the buy…</div></div>';
+  try {
+    const got = await readJson(PATHS.buy(id));
+    if (S.view !== "buy" || location.hash !== "#/buy/" + id) return;
+    if (!got){ $("#view").innerHTML = '<a class="back" href="#/">‹ All buys</a><div class="card"><div class="empty">This buy isn\'t there any more: someone deleted it.</div></div>'; return; }
+    setBuy(got.data, got.etag);
+    renderBuy();
+  } catch(e){
+    $("#view").innerHTML = '<a class="back" href="#/">‹ All buys</a><div class="card"><div class="empty" style="color:var(--bad)">The buy couldn\'t be loaded: ' + esc(errMsg(e)) + "</div></div>";
+  }
+}
+function renderBuy(){
+  const b = S.buy, rc = R.recap(b), fl = R.flags(b.customer, b.pos), cust = R.customer(b.customer) || { name:b.customer };
+  S.base = new Map([["name", b.name]].concat(rc.rows.map(r => ["notes\u0001" + r.style, (b.notes || {})[r.style] || ""])));
+  const sm = rc.summary;
+  const ordered = sm.orderFrom === sm.orderTo ? R.mdy(sm.orderFrom) : R.mdy(sm.orderFrom) + " – " + R.mdy(sm.orderTo);
+  let h = '<a class="back" href="#/">‹ All buys</a>';
+  h += '<section class="card"><div class="head"><label class="fld name"><span>Buy</span><input id="buyName" value="' + esc(b.name) + '" maxlength="80"></label>' +
+       '<button class="btn" data-act="addOpen"' + (cust.read ? "" : " disabled") + '>Add POs</button><button class="btn" data-act="exportOne">Export</button>' +
+       (isAdmin() ? '<button class="btn danger" data-act="delBuy">Delete</button>' : "") + "</div>" +
+       '<div class="meta">' + esc(cust.name) + " · created " + dayOf(b.created) + " by " + esc(b.by) + (b.updatedBy && b.updated !== b.created ? " · last changed " + dayOf(b.updated) + " by " + esc(b.updatedBy) : "") + "</div>" +
+       (S.adding ? '<div class="imp"><div class="drop off" id="drop" tabindex="0" role="button" aria-disabled="true"><div class="arrow">↓</div><div><b>Drop the ' + esc(cust.name) + ' POs to add here</b><span class="hint" id="dropHint"></span></div></div>' +
+                   '<button class="btn" data-act="addClose">Cancel</button></div><div class="job" id="job"></div>' : "") +
+       "</section>";
+  h += '<div class="kpis">' +
+       kpi(rc.total.pos, "POs", rc.byBanner.map(x => x.pos + " " + x.banner).join(" · ")) +
+       kpi(R.fmt(rc.total.units), "Units", rc.rows.length + " styles") +
+       kpi(R.money(rc.total.ext), "Cost", "at the PO's unit costs") +
+       kpi(rc.windows.length, "Ship windows", rc.windows.length ? rc.windows[0].label + (rc.windows.length > 1 ? " to " + rc.windows[rc.windows.length - 1].label : "") : "") +
+       kpi(esc(sm.buyers.join(", ") || "—"), "Buyer", "ordered " + ordered + (sm.depts.length ? " · dept " + esc(sm.depts.join(", ")) : "")) + "</div>";
+  h += '<div class="pair"><section class="card"><div class="card-hd"><h2>By ship window</h2></div><div class="tw">' +
+       miniTable("Ship window", rc.byWindow, "label") + '</div></section><section class="card"><div class="card-hd"><h2>By banner</h2></div><div class="tw">' +
+       miniTable("Banner", rc.byBanner, "banner") + "</div></section></div>";
+  if (fl.length) h += '<section class="card"><div class="card-hd"><h2>Flags · ' + fl.length + '</h2><div class="spacer"></div><span class="hint">Worked out from the POs every time the buy opens</span></div><ul class="flags">' +
+                      fl.map(f => "<li><span>" + esc(f.text) + "</span></li>").join("") + "</ul></section>";
+  h += '<section class="card"><div class="card-hd"><h2>Recap</h2><div class="spacer"></div><span class="hint">Notes save as you type</span></div><div class="tbl-scroll">' + recapTable(b, rc, fl) + "</div></section>";
+  h += '<section class="card"><div class="card-hd"><h2>POs · ' + b.pos.length + '</h2></div><div class="tw">' + poTable(b, rc) + "</div></section>";
+  $("#view").innerHTML = h;
+  renderJob(); syncDrop();
+}
+const kpi = (v, label, sub) => '<div class="card kpi"><span class="lbl">' + label + '</span><div class="v">' + v + '</div><div class="s">' + (sub || "") + "</div></div>";
+function miniTable(head, list, key){
+  return '<table class="t"><thead><tr><th>' + head + '</th><th class="n">POs</th><th class="n">Units</th><th class="n">Cost</th></tr></thead><tbody>' +
+    list.map(x => "<tr><td>" + esc(x[key]) + '</td><td class="n">' + x.pos + '</td><td class="n">' + R.fmt(x.units) + '</td><td class="n">' + R.money(x.ext) + "</td></tr>").join("") + "</tbody></table>";
+}
+function recapTable(b, rc, fl){
+  const flagged = new Map();
+  for (const f of fl) if (f.style) (flagged.get(f.style) || flagged.set(f.style, []).get(f.style)).push(f.text);
+  const cols = rc.windows.flatMap(w => w.banners.flatMap(x => x.pos));
+  const notes = b.notes || {};
+  let h = '<table class="g"><thead><tr class="h0">' +
+    '<th rowspan="3" class="fz c-style lab">Style</th><th rowspan="3" class="fz c-desc lab">Description</th><th rowspan="3" class="fz c-cost lab n">Cost</th>' +
+    rc.windows.map(w => '<th class="win" colspan="' + w.banners.reduce((t, x) => t + x.pos.length, 0) + '">' + esc(w.label) + "</th>").join("") +
+    '<th rowspan="3" class="lab n">Total units</th><th rowspan="3" class="lab n">Ext cost</th><th rowspan="3" class="lab">Notes</th></tr><tr class="h1">' +
+    rc.windows.map(w => w.banners.map(x => '<th colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
+    cols.map(p => "<th>" + (p.file && p.file.webUrl ? '<a href="' + esc(p.file.webUrl) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</th>").join("") + "</tr></thead><tbody>";
+  for (const r of rc.rows){
+    const f = flagged.get(r.style);
+    h += '<tr><td class="fz c-style">' + esc(r.style) + (f ? '<span class="flag" title="' + esc(f.join("\n")) + '">⚑</span>' : "") + '</td><td class="fz c-desc" title="' + esc(r.desc) + '">' + esc(r.desc) +
+         '</td><td class="fz c-cost n">' + (r.cost != null ? R.money(r.cost) : esc(r.costs.map(c => R.money(c)).join(" / "))) + "</td>" +
+         cols.map(p => r.units[p.po] != null ? '<td class="n">' + R.fmt(r.units[p.po]) + "</td>" : '<td class="n blank"></td>').join("") +
+         '<td class="n tot">' + R.fmt(r.total) + '</td><td class="n">' + R.money(r.ext) + '</td><td class="note"><input class="note" data-style="' + esc(r.style) + '" value="' + esc(notes[r.style] || "") +
+         '" aria-label="Notes for ' + esc(r.style) + '" maxlength="300"></td></tr>';
+  }
+  h += '</tbody><tfoot><tr><td class="fz c-style">Total</td><td class="fz c-desc"></td><td class="fz c-cost"></td>' +
+       cols.map(p => '<td class="n">' + R.fmt(rc.poUnits[p.po]) + "</td>").join("") +
+       '<td class="n">' + R.fmt(rc.total.units) + '</td><td class="n">' + R.money(rc.total.ext) + "</td><td></td></tr></tfoot></table>";
+  return h;
+}
+function poTable(b, rc){
+  return '<table class="t"><thead><tr><th>PO</th><th>Banner</th><th>Reference</th><th>Ordered</th><th>Start ship</th><th>Cancel</th><th>Buyer</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>Original</th>' +
+    (isAdmin() ? "<th></th>" : "") + "</tr></thead><tbody>" +
+    rc.pos.map(p => "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
+      "</td><td>" + esc(p.buyer) + '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td><td>" +
+      (p.file && p.file.webUrl ? '<a href="' + esc(p.file.webUrl) + '" target="_blank" rel="noopener">' + esc(p.file.name || p.po + ".pdf") + "</a>" : esc((p.file && p.file.name) || "")) + "</td>" +
+      (isAdmin() ? '<td><button class="icon" data-act="rmPo" data-po="' + esc(p.po) + '" title="Remove PO ' + esc(p.po) + ' from this buy" aria-label="Remove PO ' + esc(p.po) + '">✕</button></td>' : "") + "</tr>").join("") +
+    "</tbody></table>";
+}
+
+/* ============================== AUTOSAVE: the name and the notes ============================== */
+// 600 ms after typing stops, and on leaving the field. Each save is made on the buy as SharePoint has it now: when
+// someone else changed the same field in the meantime, it isn't saved and their value is shown.
+const fieldKey = path => path.join("\u0001");
+const getField = (d, path) => path[0] === "name" ? d.name : ((d.notes || {})[path[1]] || "");
+function setField(d, path, v){
+  if (path[0] === "name"){ d.name = v; return; }
+  d.notes = d.notes || {};
+  if (v) d.notes[path[1]] = v; else delete d.notes[path[1]];
+}
+function fieldOf(el){ return el.id === "buyName" ? ["name"] : el.classList.contains("note") ? ["notes", el.dataset.style] : null; }
+function schedule(el){
+  const path = fieldOf(el); if (!path) return;
+  const k = fieldKey(path);
+  clearTimeout(S.timers.get(k));
+  S.timers.set(k, setTimeout(() => flush(el), 600));
+}
+function flush(el){
+  const path = fieldOf(el); if (!path || !S.buy) return;
+  const k = fieldKey(path);
+  clearTimeout(S.timers.get(k)); S.timers.delete(k);
+  const id = S.buy.id, to = el.value.trim();
+  if (path[0] === "name" && !to){ setSave("A buy needs a name, so the old one is kept.", true); el.value = S.base.get(k); return; }
+  S.chain = S.chain.then(() => saveField(id, path, to, el)).catch(e => console.error(e));
+}
+async function saveField(id, path, to, el){
+  const k = fieldKey(path), from = S.base.has(k) ? S.base.get(k) : "";
+  if (to === from || !S.buy || S.buy.id !== id) return;
+  setSave("Saving…");
+  try {
+    const data = await mutateBuy(id, d => {
+      const now = getField(d, path);
+      if (now !== from && now !== to){ const e = new Error("conflict"); e.conflict = true; throw e; }
+      setField(d, path, to);
+    });
+    S.base.set(k, to);
+    showSaved(data);
+    if (path[0] === "name") await updateIndex(putEntry(data));
+    setSave("Saved");
+  } catch(e){
+    if (!e.conflict){ setSave("Not saved: " + errMsg(e), true); return; }
+    const got = await readJson(PATHS.buy(id)).catch(() => null);
+    if (got && S.buy && S.buy.id === id) setBuy(got.data, got.etag);
+    const theirs = got ? getField(got.data, path) : from;
+    S.base.set(k, theirs);
+    if (el) el.value = theirs;   // the box shows what's saved, never text that wasn't
+    if (got) showSaved(got.data);
+    const what = path[0] === "name" ? "the name" : "the note on " + path[1];
+    setSave("Not saved: someone else changed " + what + " to “" + theirs + "” while you were typing.", true);
+  }
+}
+/* After a save made on someone else's newer copy, show their changes in the fields nobody is typing in here */
+function showSaved(d){
+  const els = [$("#buyName"), ...document.querySelectorAll("input.note")].filter(Boolean);
+  for (const el of els){
+    const path = fieldOf(el), k = fieldKey(path);
+    if (S.timers.has(k) || document.activeElement === el) continue;
+    const v = getField(d, path);
+    if (el.value.trim() !== v) el.value = v;
+    S.base.set(k, v);
+  }
+}
+let saveTimer = 0;
+function setSave(text, bad){
+  const el = $("#saveSt"); if (!el) return;
+  el.textContent = text; el.className = "save" + (bad ? " err" : "");
+  clearTimeout(saveTimer);
+  if (!bad && text === "Saved") saveTimer = setTimeout(() => { if (el.textContent === "Saved") el.textContent = ""; }, 4000);
+}
+
+/* ============================== EXPORT ============================== */
+async function exportBuys(ids){
+  if (typeof XLSX === "undefined"){ setSave("The Excel library didn't load (cdn.jsdelivr.net blocked?).", true); return; }
+  setSave("Making the Excel file…");
+  try {
+    const wb = XLSX.utils.book_new(), used = new Set(), names = [];
+    for (const id of ids){
+      const b = S.buy && S.buy.id === id ? S.buy : ((await readJson(PATHS.buy(id))) || {}).data;
+      if (!b) continue;
+      XLSX.utils.book_append_sheet(wb, R.worksheet(b), R.sheetName(b.name, used));
+      names.push(b.name);
+    }
+    if (!names.length){ setSave("Nothing to export: those buys aren't there any more.", true); return; }
+    const d = new Date();
+    const file = (names.length === 1 ? names[0] : "PO Recap " + (d.getMonth() + 1) + "-" + d.getDate() + "-" + d.getFullYear()).replace(/[\\/:*?"<>|]/g, "-");
+    XLSX.writeFile(wb, file + ".xlsx");
+    setSave("Exported " + names.length + " buy" + (names.length > 1 ? "s" : ""));
+  } catch(e){ setSave("Not exported: " + errMsg(e), true); }
+}
+
+/* ============================== DELETE (admins) ============================== */
+function confirmBox(title, body, ok){
+  return new Promise(resolve => {
+    const m = $("#modal");
+    $("#mTitle").textContent = title; $("#mBody").textContent = body; $("#mOk").textContent = ok;
+    m.hidden = false; $("#mCancel").focus();
+    const done = v => { m.hidden = true; $("#mOk").onclick = $("#mCancel").onclick = null; removeEventListener("keydown", key, true); resolve(v); };
+    const key = e => { if (e.key === "Escape"){ e.preventDefault(); done(false); } };
+    $("#mOk").onclick = () => done(true);
+    $("#mCancel").onclick = () => done(false);
+    addEventListener("keydown", key, true);
+  });
+}
+async function deleteBuy(){
+  const b = S.buy;
+  if (!b || !isAdmin()) return;
+  if (!await confirmBox("Delete “" + b.name + "”?", "Its " + b.pos.length + " PO" + (b.pos.length === 1 ? "" : "s") + " and their PDFs go to the SharePoint recycle bin, and the buy leaves the list for everyone.", "Delete buy")) return;
+  setSave("Deleting…");
+  try {
+    await delItem(PATHS.dir(b.id));
+    await delItem(PATHS.buy(b.id));
+    await updateIndex(ix => { ix.buys = ix.buys.filter(x => x.id !== b.id); });
+    S.sel.delete(b.id);
+    setSave("Deleted “" + b.name + "”");
+    location.hash = "#/";
+  } catch(e){ setSave("Not deleted: " + errMsg(e), true); }
+}
+async function removePo(po){
+  const b = S.buy;
+  if (!b || !isAdmin()) return;
+  if (!await confirmBox("Remove PO " + po + "?", "It leaves “" + b.name + "”, and its PDF goes to the SharePoint recycle bin. You can drop it in again with Add POs.", "Remove PO")) return;
+  setSave("Removing…");
+  try {
+    const data = await mutateBuy(b.id, d => { d.pos = d.pos.filter(p => p.po !== po); });
+    await delItem(PATHS.pdf(b.id, po));
+    await updateIndex(putEntry(data));
+    setSave("Removed PO " + po);
+    renderBuy();
+  } catch(e){ setSave("Not removed: " + errMsg(e), true); }
+}
+
+/* ============================== EVENTS ============================== */
+function route(){
+  const m = /^#\/buy\/([\w-]+)$/.exec(location.hash);
+  if (m) openBuy(decodeURIComponent(m[1])); else showHome();
+}
+function pickFiles(){
+  if (!dropTarget() || S.job) return;
+  const f = $("#filePick"); f.value = ""; f.click();
+}
+function wire(){
+  $("#signOut").onclick = () => msalApp && msalApp.logoutRedirect({ postLogoutRedirectUri:redirectUri });
+  addEventListener("hashchange", route);
+  $("#filePick").onchange = () => { const k = dropTarget(); if (k && $("#filePick").files.length) startJob(S.view === "home" ? "new" : "add", k, [...$("#filePick").files]); };
+  let dragN = 0;
+  const over = on => { const d = $("#drop"); if (d) d.classList.toggle("over", on && !!dropTarget() && !S.job); };
+  addEventListener("dragenter", e => { if (e.dataTransfer && [...e.dataTransfer.types].indexOf("Files") >= 0){ dragN++; over(true); } });
+  addEventListener("dragleave", () => { dragN = Math.max(0, dragN - 1); if (!dragN) over(false); });
+  addEventListener("dragover", e => e.preventDefault());
+  addEventListener("drop", e => {
+    e.preventDefault(); dragN = 0; over(false);
+    const files = e.dataTransfer ? [...e.dataTransfer.files] : [];
+    const k = dropTarget();
+    if (!files.length || S.job) return;
+    if (!k){ if (S.view === "home") setSave("Pick a customer first, then drop the POs in.", true); return; }
+    startJob(S.view === "home" ? "new" : "add", k, files);
+  });
+  document.addEventListener("click", e => {
+    const t = e.target.closest("[data-act]");
+    if (t){
+      const a = t.dataset.act;
+      if (a === "cancelJob"){ if (S.job){ S.job.cancelled = true; if (S.job.phase === "check") endJob(); } }
+      else if (a === "saveJob") saveJob();
+      else if (a === "exportSel") exportBuys([...S.sel]);
+      else if (a === "exportOne" && S.buy) exportBuys([S.buy.id]);
+      else if (a === "addOpen"){ S.adding = true; renderBuy(); }
+      else if (a === "addClose"){ if (S.job && S.job.phase === "saving") return; dropJob(); S.adding = false; renderBuy(); }
+      else if (a === "delBuy") deleteBuy();
+      else if (a === "rmPo") removePo(t.dataset.po);
+      return;
+    }
+    if (e.target.closest("#drop")) pickFiles();
+  });
+  document.addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.id === "drop"){ e.preventDefault(); pickFiles(); } });
+  document.addEventListener("change", e => {
+    const t = e.target;
+    if (t.id === "cust"){ LS.set("customer", t.value); syncDrop(); }
+    else if (t.id === "filt"){ S.filter = t.value; LS.set("filter", t.value); renderBuys(); }
+    else if (t.dataset.act === "sel"){ t.checked ? S.sel.add(t.dataset.id) : S.sel.delete(t.dataset.id); renderBuys(); }
+    else if (t.dataset.act === "selAll"){
+      const ids = S.index.buys.filter(b => !S.filter || b.customer === S.filter).map(b => b.id);
+      ids.forEach(id => t.checked ? S.sel.add(id) : S.sel.delete(id)); renderBuys();
+    }
+  });
+  document.addEventListener("input", e => { if (e.target.id === "jobName" && S.job) S.job.name = e.target.value; else schedule(e.target); });
+  document.addEventListener("focusout", e => { if (fieldOf(e.target) && S.timers.has(fieldKey(fieldOf(e.target)))) flush(e.target); });
+  addEventListener("beforeunload", e => { if (S.timers.size || (S.job && S.job.phase === "saving")){ e.preventDefault(); e.returnValue = ""; } });
+}
+
+/* ============================== INIT ================================ */
+function gateMsg(html){ $("#gateMsg").innerHTML = html; }
+async function start(){
+  if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
+  if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
+  if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
+  msalApp = new msal.PublicClientApplication({
+    auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },
+    cache:{ cacheLocation:"localStorage", storeAuthStateInCookie:false }
+  });
+  await msalApp.initialize();
+  const rr = await msalApp.handleRedirectPromise().catch(e => { console.error(e); return null; });
+  const acct = (rr && rr.account) || msalApp.getAllAccounts()[0];
+  if (!acct){
+    gateMsg("");
+    $("#signIn").style.display = "";
+    $("#signIn").onclick = () => framed
+      ? msalApp.loginPopup({ scopes:CFG.scopes }).then(r => { S.acct = r.account; msalApp.setActiveAccount(r.account); boot(); })
+      : msalApp.loginRedirect({ scopes:CFG.scopes });
+    return;
+  }
+  S.acct = acct; msalApp.setActiveAccount(acct);
+  boot();
+}
+async function boot(){
+  try {
+    $("#signIn").style.display = "none";
+    gateMsg('<div class="spin"></div>Connecting to SharePoint…');
+    await resolveDrive();
+    $("#whoName").textContent = me();
+    $("#gate").style.display = "none";
+    $("#app").style.display = "";
+    wire();
+    route();
+  } catch(e){
+    console.error(e);
+    gateMsg('<span style="color:var(--bad)">' + (e.status === 401 || e.status === 403
+      ? "Signed in, but you don't have access to " + esc(e.site || "the SharePoint site") + ". Ask Saul to add you."
+      : esc(errMsg(e))) + "</span>");
+  }
+}
+start();
+</script>
+</body>
+</html>
