@@ -203,7 +203,7 @@ const CFG = {
   tenantId: "eeea7e3e-9ccb-4a16-894e-3417c6a7a4c1",
   host    : "met1sol.sharepoint.com",
   scopes  : ["User.Read", "Sites.ReadWrite.All"],
-  site    : "/sites/Production",
+  site    : "/sites/Sales",
   drive   : "Documents",
   root    : "PO Recap",                                       // index.json, Buys/<id>.json, Buys/<id>/<PO #>.pdf
   admins  : ["saul@metro1solutions.com"],                     // only these sign-ins see Delete and Remove
@@ -938,6 +938,8 @@ async function boot(){
     console.error(e);
     gateMsg('<span style="color:var(--bad)">' + (e.status === 401 || e.status === 403
       ? "Signed in, but you don't have access to " + esc(e.site || "the SharePoint site") + ". Ask Saul to add you."
+      : e.status === 404 && e.site
+      ? "There's no SharePoint site at " + esc(CFG.host + e.site) + "."
       : esc(errMsg(e))) + "</span>");
   }
 }
