@@ -172,17 +172,88 @@ test('recap: one row per style by category then style, with units per PO, totals
     ['1438', 'ZZ10001', 3.5, { 900104: 1440, 900102: 1440, 900101: 1440 }, 4320, 15120],
     ['1488', 'ZZ10003-F', null, { 900101: 1632, 900103: 96 }, 1728, 5160],
   ]);
-  assert.deepEqual(R.rows[2].costs, [2.75, 3]);
+  assert.deepEqual(R.rows[2].costs, [3, 2.75], 'in grid order: 900101 (10/8) before 900103 (10/12)');
   assert.deepEqual(R.total, { pos: 4, units: 6528, ext: 21216 });
   assert.deepEqual(R.byBanner.map(b => [b.banner, b.pos, b.units]), [['Marshalls', 2, 4512], ['TJ Maxx', 2, 2016]]);
   assert.deepEqual(R.byWindow.map(w => [w.label, w.units, w.ext]), [['10/8–10/15', 4992, 15912], ['10/12–10/19', 1536, 5304]]);
   assert.deepEqual(R.summary.buyers, ['PAT SAMPLE']);
 });
 
-test('recap: two descriptions with the same count show the one on the highest PO number', () => {
+test('recap: a description or cost that differs is never picked: the row lists each, and every cell keeps its own PO\'s', () => {
   const b = buy();
-  b.pos = [P({ po: '900101', ref: 'D1' }, [{ ...LINES[0], desc: 'OLD NAME' }]), P({ po: '900102', ref: 'D1', banner: 'TJ Maxx' }, [LINES[0]])];
-  assert.equal(Recap.recap(b).rows[0].desc, '2PK CREAM BLUSH STICK');
+  b.pos = [P({ po: '900101', ref: 'D1' }, [{ ...LINES[0], desc: 'OLD NAME', cost: 3 }]), P({ po: '900102', ref: 'D1', banner: 'TJ Maxx' }, [LINES[0]]),
+           P({ po: '900103', ref: 'D2' }, [{ ...LINES[0], desc: '2pk  cream blush stick' }])];
+  const row = Recap.recap(b).rows[0];
+  // grid order is 900101, 900103 (Marshalls), 900102 (TJ Maxx): a description shows as the first PO there spells it
+  assert.equal(row.desc, 'OLD NAME / 2pk cream blush stick', 'capitals and spacing alone are the same description');
+  assert.deepEqual(row.varies, { cost: true, desc: true });
+  assert.deepEqual(row.cells['900101'], { units: 1440, costs: [3], descs: ['OLD NAME'], parts: [{ units: 1440, cost: 3, desc: 'OLD NAME' }] });
+  assert.deepEqual(row.cells['900102'], { units: 1440, costs: [3.5], descs: ['2pk cream blush stick'], parts: [{ units: 1440, cost: 3.5, desc: '2pk cream blush stick' }] });
+  assert.equal(row.cost, null);
+});
+
+test('cell notes and hovers: each PO\'s own cost and description, for what varies', () => {
+  const b = buy();
+  b.pos = [P({ po: '900101', ref: 'D1' }, [{ ...LINES[0], desc: '2pk Lip Liners Raise & Steady', cost: 3 }, LINES[1]]),
+           P({ po: '900102', ref: 'D1', banner: 'TJ Maxx' }, [{ ...LINES[0], cost: 3 }, { ...LINES[1], desc: 'LIP BALM VANILLA' }]),
+           P({ po: '900103', ref: 'D2' }, [LINES[0], LINES[1]])];
+  const R = Recap.recap(b), both = R.rows.find(r => r.style === 'ZZ10001'), desc = R.rows.find(r => r.style === 'ZZ10002');
+  assert.equal(Recap.cellText(both, '900101'), '1440-$3.00-2pk Lip Liners Raise & Steady');
+  assert.equal(Recap.cellText(both, '900103'), '1440-$3.50-2PK CREAM BLUSH STICK');
+  assert.equal(Recap.cellText(desc, '900102'), '480-LIP BALM VANILLA', 'only what varies: the cost is the same everywhere');
+  assert.equal(Recap.cellText(desc, '900199'), '');
+  assert.equal(Recap.cellTip(both, '900101'), [
+    'PO 900101: 1,440 units',
+    'Cost here: $3.00', 'Elsewhere: $3.00 on 900102; $3.50 on 900103',
+    'Description here: “2pk Lip Liners Raise & Steady”', 'Elsewhere: “2PK CREAM BLUSH STICK” on 900102, 900103'].join('\n'));
+  assert.equal(Recap.variantsTip(both, 'cost'), '$3.00 on 900101, 900102\n$3.50 on 900103');
+  assert.equal(Recap.variantsTip(desc, 'desc'), '“LIP BUTTER BALM VANIL” on 900101, 900103\n“LIP BALM VANILLA” on 900102');
+});
+
+test('a PO with the style on two lines at different costs keeps the units at each, in the cell and the hover', () => {
+  const b = buy();
+  b.pos = [P({ po: '900101', ref: 'D1' }, [{ ...LINES[0], units: 96, cost: 3 }, { ...LINES[0], units: 48, cost: 2.6, desc: 'OTHER NAME' }]),
+           P({ po: '900102', ref: 'D1', banner: 'TJ Maxx' }, [{ ...LINES[0], units: 144, cost: 3 }])];
+  const row = Recap.recap(b).rows[0];
+  assert.equal(Recap.cellText(row, '900101'), '96-$3.00-2PK CREAM BLUSH STICK + 48-$2.60-OTHER NAME');
+  assert.equal(Recap.cellText(row, '900102'), '144-$3.00-2PK CREAM BLUSH STICK');
+  const tip = Recap.cellTip(row, '900101').split('\n');
+  assert.deepEqual(tip.slice(0, 2), ['PO 900101: 144 units', 'Cost here: 96 at $3.00, 48 at $2.60']);
+  assert.equal(tip[3], 'Description here: 96 “2PK CREAM BLUSH STICK”, 48 “OTHER NAME”');
+  assert.equal(row.ext, 96 * 3 + 48 * 2.6 + 144 * 3);
+});
+
+test('a row\'s costs and descriptions are listed in the same order, so the first of each come from the same PO', () => {
+  const b = buy();
+  b.pos = [P({ po: '900105', ref: 'D1', start: '11/1/2026', cancel: '11/8/2026' }, [{ ...LINES[0], cost: 3, desc: 'LINERS' }]),
+           P({ po: '900101', ref: 'D2', start: '11/5/2026', cancel: '11/12/2026' }, [{ ...LINES[0], cost: 2.6, desc: 'LIP KIT' }])];
+  const row = Recap.recap(b).rows[0];
+  assert.deepEqual(row.costs, [3, 2.6]);
+  assert.equal(row.desc, 'LINERS / LIP KIT');
+  assert.equal(Recap.variantsTip(row, 'cost'), '$3.00 on 900105\n$2.60 on 900101');
+  const ws = Recap.worksheet(b);
+  const h = +Object.keys(ws).find(k => k[0] !== '!' && ws[k].v === 'Check').slice(1);
+  assert.deepEqual([ws['C' + (h + 3)].v, ws['D' + (h + 3)].v], ['LINERS / LIP KIT', '3.00 / 2.60']);
+});
+
+test('worksheet: a style that varies is red, its cells read units-cost-description, everything else stays a number', () => {
+  const b = buy();
+  b.pos = [P({ po: '900101', ref: 'D1' }, [{ ...LINES[0], desc: '2pk Lip Liners Raise & Steady', cost: 3 }, LINES[1]]),
+           P({ po: '900102', ref: 'D1', banner: 'TJ Maxx' }, [LINES[0], LINES[1]])];
+  const ws = Recap.worksheet(b);
+  const h = +Object.keys(ws).find(k => k[0] !== '!' && ws[k].v === 'Check').slice(1);
+  const at = (c, r) => ws[c + r];
+  // rows: ZZ10002 (1336) at h+3, ZZ10001 (1438) at h+4; columns E = 900101, F = 900102
+  assert.deepEqual(['C', 'D', 'E', 'F'].map(c => at(c, h + 4).v),
+    ['2pk Lip Liners Raise & Steady / 2PK CREAM BLUSH STICK', '3.00 / 3.50', '1440-$3.00-2pk Lip Liners Raise & Steady', '1440-$3.50-2PK CREAM BLUSH STICK']);
+  for (const c of ['C', 'D', 'E', 'F']) {
+    assert.equal(at(c, h + 4).s.fill.fgColor.rgb, 'FFC7CE', c + ' is red');
+    assert.equal(at(c, h + 4).s.font.color.rgb, '9C0006');
+  }
+  assert.equal(at('E', h + 3).v, 480); assert.equal(at('E', h + 3).t, 'n');
+  assert.notEqual(at('E', h + 3).s.fill.fgColor.rgb, 'FFC7CE', 'a style that is the same everywhere keeps its window colour');
+  assert.equal(at('G', h + 4).v, 2880, 'Total units still counts the red cells');
+  assert.equal(at('E', h + 5).v, 1920, 'and so does the totals row');
 });
 
 /* ---------------- the Excel sheet ---------------- */
@@ -201,7 +272,8 @@ test('worksheet: title, summary, three heading rows, Check first and Notes last,
   assert.deepEqual(['E', 'F', 'G', 'H'].map(c => v(c + (h + 2))), [900101, 900102, 900104, 900103]);
   assert.equal(ws['E' + (h + 2)].t, 'n', 'a PO # of digits is a number, as Excel takes it');
   assert.deepEqual(['A', 'B', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'].map(c => v(c + (h + 4))), ['☐', 'ZZ10001', 3.5, 1440, 1440, 1440, '', 4320, 15120, 'update qty']);
-  assert.equal(v('D' + (h + 5)), '2.75 / 3.00');
+  assert.equal(v('D' + (h + 5)), '3.00 / 2.75');
+  assert.deepEqual(['E', 'H'].map(c => v(c + (h + 5))), ['1632-$3.00', '96-$2.75'], 'only the cost varies, so only the cost is noted');
   assert.deepEqual(['B', 'E', 'F', 'G', 'H', 'I', 'J'].map(c => v(c + (h + 6))), ['Total', 3072, 1920, 1440, 96, 6528, 21216]);
   assert.equal(ws['J' + (h + 4)].z, '$#,##0.00');
   assert.ok(ws['!merges'].some(m => m.s.r === h - 1 && m.s.c === 4 && m.e.c === 5), 'the ship window spans its two POs');

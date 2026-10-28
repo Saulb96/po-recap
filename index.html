@@ -150,6 +150,11 @@ table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-
 .g input.note:focus{background:#fff;border-color:var(--edge)}
 .g .flag{color:var(--warn);margin-left:4px;cursor:help}
 .g .wst{border-left:2px solid rgba(95,108,125,.34)}
+/* a style whose cost or description varies between POs: Excel's light red with dark red text, above the window colours */
+.g tbody tr td.bad{background:#ffc7ce;color:#9c0006;font-weight:600;cursor:help}
+.g tbody tr td.bad:hover{box-shadow:inset 0 0 0 2px #9c0006}
+#tip{position:fixed;z-index:20;max-width:440px;padding:8px 11px;border-radius:10px;background:#16202c;color:#fff;font-size:12px;line-height:1.5;white-space:pre-line;pointer-events:none;box-shadow:0 8px 24px rgba(22,32,44,.28)}
+#tip[hidden]{display:none}
 .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:7px;vertical-align:-1px;box-shadow:inset 0 0 0 1px rgba(22,32,44,.12)}
 
 /* confirm */
@@ -191,12 +196,13 @@ table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-
   </div>
 </div>
 
+<div id="tip" role="tooltip" hidden></div>
 <input type="file" id="filePick" accept="application/pdf,.pdf" multiple style="display:none">
 
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<script src="recap.js?v=20261028c"></script>
+<script src="recap.js?v=20261028e"></script>
 <script>
 "use strict";
 /* ============================== CONFIG ============================== */
@@ -713,10 +719,15 @@ function recapTable(b, rc, fl){
     rc.windows.map(w => w.banners.map((x, j) => '<th class="t' + w.tone + (j ? "" : " wst") + '" colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
     cols.map(p => '<th class="' + tone(p) + '">' + (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</th>").join("") + "</tr></thead><tbody>";
   for (const r of rc.rows){
-    const f = flagged.get(r.style);
-    h += '<tr><td class="fz c-style">' + esc(r.style) + (f ? '<span class="flag" title="' + esc(f.join("\n")) + '">⚑</span>' : "") + '</td><td class="fz c-desc" title="' + esc(r.desc) + '">' + esc(r.desc) +
-         '</td><td class="fz c-cost n">' + (r.cost != null ? R.money(r.cost) : esc(r.costs.map(c => R.money(c)).join(" / "))) + "</td>" +
-         cols.map(p => r.units[p.po] != null ? '<td class="n ' + tone(p) + '">' + R.fmt(r.units[p.po]) + "</td>" : '<td class="n blank ' + tone(p) + '"></td>').join("") +
+    const f = flagged.get(r.style), odd = r.varies.cost || r.varies.desc;
+    // a style whose cost or description isn't the same on every PO: its cells go red, each with what its PO says
+    const cell = p => !r.cells[p.po] ? '<td class="n blank ' + tone(p) + '"></td>'
+      : odd ? '<td class="n bad ' + tone(p) + '" data-tip="' + esc(R.cellTip(r, p.po)) + '">' + R.fmt(r.cells[p.po].units) + "</td>"
+      : '<td class="n ' + tone(p) + '">' + R.fmt(r.cells[p.po].units) + "</td>";
+    h += '<tr><td class="fz c-style">' + esc(r.style) + (f ? '<span class="flag" data-tip="' + esc(f.join("\n")) + '">⚑</span>' : "") + "</td>" +
+         (r.varies.desc ? '<td class="fz c-desc bad" data-tip="' + esc(R.variantsTip(r, "desc")) + '">' : '<td class="fz c-desc" title="' + esc(r.desc) + '">') + esc(r.desc) + "</td>" +
+         (r.varies.cost ? '<td class="fz c-cost n bad" data-tip="' + esc(R.variantsTip(r, "cost")) + '">' + esc(r.costs.map(c => R.money(c)).join(" / ")) : '<td class="fz c-cost n">' + R.money(r.cost)) + "</td>" +
+         cols.map(cell).join("") +
          '<td class="n tot">' + R.fmt(r.total) + '</td><td class="n">' + R.money(r.ext) + '</td><td class="note"><input class="note" data-style="' + esc(r.style) + '" value="' + esc(notes[r.style] || "") +
          '" aria-label="Notes for ' + esc(r.style) + '" maxlength="300"></td></tr>';
   }
@@ -877,6 +888,26 @@ function pickFiles(){
 }
 function wire(){
   $("#signOut").onclick = () => msalApp && msalApp.logoutRedirect({ postLogoutRedirectUri:redirectUri });
+  // hover tips: one box, beside whatever carries data-tip (below it, or above when there's no room)
+  const tip = $("#tip");
+  document.addEventListener("mouseover", e => {
+    const t = e.target.closest && e.target.closest("[data-tip]");
+    if (!t){ tip.hidden = true; return; }
+    // measured at the top left first: left where the last tip was, it would come out squeezed against the edge
+    tip.style.left = "0px"; tip.style.top = "0px";
+    tip.textContent = t.dataset.tip; tip.hidden = false;
+    const r = t.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    let y = r.bottom + 6;
+    if (y + h > innerHeight - 8) y = r.top - h - 6;
+    tip.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+    tip.style.top = Math.max(8, y) + "px";
+  });
+  addEventListener("scroll", () => { tip.hidden = true; }, true);
+  addEventListener("hashchange", () => { tip.hidden = true; });
+  // and goes when the pointer leaves the page or the window loses focus
+  document.addEventListener("mouseout", e => { if (!e.relatedTarget) tip.hidden = true; });
+  addEventListener("blur", () => { tip.hidden = true; });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) tip.hidden = true; });
   addEventListener("hashchange", route);
   $("#filePick").onchange = () => { const k = dropTarget(); if (k && $("#filePick").files.length) startJob(S.view === "home" ? "new" : "add", k, [...$("#filePick").files]); };
   let dragN = 0;
@@ -930,7 +961,7 @@ async function start(){
   if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
   if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
   if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
-  if (!R.TONES){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
+  if (!R.TONES || !R.cellText){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
   msalApp = new msal.PublicClientApplication({
     auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },

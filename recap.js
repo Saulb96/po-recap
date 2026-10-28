@@ -16,6 +16,8 @@
   const money = n => '$' + (n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const words = a => a.length < 3 ? a.join(' and ') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1];
   const center = it => it.x + (it.w || 0) / 2;
+  // two descriptions are the same when they differ only in capitals and spacing
+  const descKey = d => String(d).replace(/\s+/g, ' ').trim().toUpperCase();
   const byNo = (a, b) => String(a).localeCompare(String(b), 'en', { numeric: true });
   // Extended cost in cents, so 25 POs of $2.25 lines add up exactly.
   const cents = (units, cost) => Math.round(units * cost * 100);
@@ -240,7 +242,7 @@
       const costs = new Map(), descs = new Map();
       for (const u of uses) {
         (costs.get(u.l.cost) || costs.set(u.l.cost, new Set()).get(u.l.cost)).add(u.p.po);
-        const k = u.l.desc.replace(/\s+/g, ' ').trim().toUpperCase();
+        const k = descKey(u.l.desc);
         (descs.get(k) || descs.set(k, { text: u.l.desc, pos: new Set() }).get(k)).pos.add(u.p.po);
       }
       const on = set => 'on ' + [...set].sort(byNo).join(', ');
@@ -270,6 +272,56 @@
   // Excel sheet use the same ones, so a window looks the same on screen and on paper.
   const TONES = [['D9EAF7', 'EEF5FB'], ['E2EFDA', 'F3F8EF'], ['FCE4D6', 'FEF4EE'], ['E4DFEC', 'F3F0F7'], ['FFF2CC', 'FFFAE8'], ['DAEEF3', 'EEF7FA']];
 
+  // A cell of a style whose cost or description varies, as the export writes it: the units, then this PO's cost and
+  // description for what varies (1632-$3.00-2pk Lip Liners). A PO with the style on two lines at different costs or
+  // descriptions gives each its own units (100-$3.00 + 50-$2.60).
+  function cellText(row, po) {
+    const c = row.cells[po];
+    if (!c) return '';
+    const say = p => {
+      const bits = [p.units];
+      if (row.varies.cost) bits.push(money(p.cost));
+      if (row.varies.desc) bits.push(p.desc);
+      return bits.join('-');
+    };
+    return c.parts.map(say).join(' + ');
+  }
+  // The hover on such a cell: this PO's cost and description (with the units at each, when it has more than one),
+  // then what every other PO with the style says.
+  function cellTip(row, po) {
+    const c = row.cells[po];
+    if (!c) return '';
+    const lines = ['PO ' + po + ': ' + fmt(c.units) + ' units'];
+    const others = Object.keys(row.cells).filter(x => x !== po).sort(byNo);
+    const here = (field, show, join) => {
+      const vals = [...new Set(c.parts.map(p => p[field]))];
+      if (vals.length < 2) return show(vals[0]);
+      return vals.map(v => fmt(c.parts.filter(p => p[field] === v).reduce((t, p) => t + p.units, 0)) + join + show(v)).join(', ');
+    };
+    const elsewhere = (pick, show) => {
+      const g = new Map();
+      for (const o of others) for (const v of pick(row.cells[o])) { if (!g.has(v)) g.set(v, []); g.get(v).push(o); }
+      return [...g].map(([v, list]) => show(v) + ' on ' + list.join(', ')).join('; ');
+    };
+    const quote = d => '“' + d + '”';
+    if (row.varies.cost) {
+      lines.push('Cost here: ' + here('cost', money, ' at '));
+      if (others.length) lines.push('Elsewhere: ' + elsewhere(x => x.costs, money));
+    }
+    if (row.varies.desc) {
+      lines.push('Description here: ' + here('desc', quote, ' '));
+      if (others.length) lines.push('Elsewhere: ' + elsewhere(x => x.descs, quote));
+    }
+    return lines.join('\n');
+  }
+  // The hover on the Cost or Description cell of such a row: each value and the POs that give it, in grid order, the
+  // same order as the cell lists them.
+  function variantsTip(row, field) {
+    const g = new Map();
+    for (const po of row.order) for (const v of row.cells[po][field === 'cost' ? 'costs' : 'descs']) { if (!g.has(v)) g.set(v, []); g.get(v).push(po); }
+    return [...g].map(([v, list]) => (field === 'cost' ? money(v) : '“' + v + '”') + ' on ' + list.join(', ')).join('\n');
+  }
+
   // POs grouped by ship window (start to cancel), then banner, then PO; one row per style.
   function recap(buy) {
     const c = customer(buy.customer) || { banners: [] };
@@ -287,22 +339,35 @@
     }
     const tones = {};
     windows.forEach((w, i) => { w.tone = i % TONES.length; for (const b of w.banners) for (const p of b.pos) tones[p.po] = w.tone; });
+    // Each style's cells keep what their own PO says (units, costs, descriptions, and the units at each cost and
+    // description when one PO has the style on two lines), so a style whose cost or description isn't the same on every
+    // PO can show each PO's own value. Nothing picks which one is right. The row's costs and descriptions are listed in
+    // grid order (the order their POs appear), so the first cost and the first description come from the same PO.
     const byStyle = new Map();
+    const addTo = (list, v) => { if (!list.includes(v)) list.push(v); };
     for (const p of pos) for (const l of p.lines) {
       let r = byStyle.get(l.style);
-      if (!r) byStyle.set(l.style, r = { style: l.style, catg: l.catg, descs: new Map(), costs: new Set(), units: {}, total: 0, ext: 0 });
-      // the description most POs give; a tie goes to the highest PO number, the latest one written
-      const d = r.descs.get(l.desc) || { n: 0, po: '' };
-      r.descs.set(l.desc, { n: d.n + 1, po: byNo(p.po, d.po) > 0 ? p.po : d.po });
-      r.costs.add(l.cost);
-      r.units[p.po] = (r.units[p.po] || 0) + l.units;
+      if (!r) byStyle.set(l.style, r = { style: l.style, catg: l.catg, descs: new Map(), costs: [], order: [], cells: {}, total: 0, ext: 0 });
+      const k = descKey(l.desc);
+      if (!r.descs.has(k)) r.descs.set(k, l.desc);
+      const desc = r.descs.get(k);
+      addTo(r.costs, l.cost);
+      let cell = r.cells[p.po];
+      if (!cell) { cell = r.cells[p.po] = { units: 0, costs: [], descs: [], parts: [] }; r.order.push(p.po); }
+      cell.units += l.units;
+      addTo(cell.costs, l.cost);
+      addTo(cell.descs, desc);
+      const part = cell.parts.find(x => x.cost === l.cost && x.desc === desc);
+      if (part) part.units += l.units; else cell.parts.push({ units: l.units, cost: l.cost, desc });
       r.total += l.units;
       r.ext += cents(l.units, l.cost);
     }
     const rows = [...byStyle.values()].map(r => {
-      const desc = [...r.descs].sort((a, b) => b[1].n - a[1].n || byNo(b[1].po, a[1].po))[0][0];
-      const costs = [...r.costs].sort((a, b) => a - b);
-      return { style: r.style, catg: r.catg, desc, costs, cost: costs.length === 1 ? costs[0] : null, units: r.units, total: r.total, ext: r.ext / 100 };
+      const descs = [...r.descs.values()], costs = r.costs;
+      const units = {};
+      for (const po of r.order) units[po] = r.cells[po].units;
+      return { style: r.style, catg: r.catg, desc: descs.join(' / '), descs, costs, cost: costs.length === 1 ? costs[0] : null,
+               varies: { cost: costs.length > 1, desc: descs.length > 1 }, cells: r.cells, order: r.order, units, total: r.total, ext: r.ext / 100 };
     }).sort((a, b) => byNo(a.catg, b.catg) || byNo(a.style, b.style));
 
     const poUnits = {}, poExt = {};
@@ -349,6 +414,8 @@
     totalMoney: { font: { bold: true }, numFmt: '$#,##0.00', border: { top: { style: 'medium' }, bottom: BORDER, left: BORDER, right: BORDER } },
     plainUnits: { numFmt: '#,##0' },
     plainMoney: { numFmt: '$#,##0.00' },
+    // Excel's own "light red fill with dark red text"
+    flagged: { font: { color: { rgb: '9C0006' } }, fill: { patternType: 'solid', fgColor: { rgb: 'FFC7CE' } }, alignment: { vertical: 'top', wrapText: true }, border: BOX },
   };
 
   function colName(c) { let s = ''; for (let n = c + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; }
@@ -425,9 +492,17 @@
     for (const row of R.rows) {
       put(r, C.check, '☐', ST.check);
       put(r, C.style, row.style, ST.text);
-      put(r, C.desc, row.desc, ST.wrap);
-      put(r, C.cost, row.cost != null ? row.cost : row.costs.map(x => x.toFixed(2)).join(' / '), row.cost != null ? ST.money : ST.text);
-      cols.forEach((po, i) => put(r, C.po0 + i, row.units[po] != null ? row.units[po] : '', tint(ST.units, R.tones[po], true)));
+      // a style whose cost or description isn't the same on every PO: its cells go red and read units-cost-description
+      // for what varies (1632-$3.00-2pk Lip Liners Raise & Steady), so each PO's own value is on the sheet
+      const odd = row.varies.cost || row.varies.desc;
+      put(r, C.desc, row.desc, row.varies.desc ? ST.flagged : ST.wrap);
+      put(r, C.cost, row.cost != null ? row.cost : row.costs.map(x => x.toFixed(2)).join(' / '), row.cost != null ? ST.money : ST.flagged);
+      cols.forEach((po, i) => {
+        const cell = row.cells[po];
+        if (!cell) put(r, C.po0 + i, '', tint(ST.units, R.tones[po], true));
+        else if (odd) put(r, C.po0 + i, cellText(row, po), ST.flagged);
+        else put(r, C.po0 + i, cell.units, tint(ST.units, R.tones[po], true));
+      });
       put(r, C.total, row.total, ST.units);
       put(r, C.ext, row.ext, ST.money);
       put(r, C.notes, notes[row.style] || '', ST.wrap);
@@ -467,6 +542,6 @@
     return s;
   }
 
-  return { CUSTOMERS, TONES, customer, read, readMarmaxx, rows, checkBatch, flags, recap, worksheet, sheetName, defaultName,
+  return { CUSTOMERS, TONES, customer, read, readMarmaxx, rows, checkBatch, flags, recap, cellText, cellTip, variantsTip, worksheet, sheetName, defaultName,
            int, num, iso, md, mdy, fmt, money, words, colName };
 });
