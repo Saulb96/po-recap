@@ -205,7 +205,7 @@ const CFG = {
   scopes  : ["User.Read", "Sites.ReadWrite.All"],
   site    : "/sites/Sales",
   drive   : "Documents",
-  root    : "PO Recap",                                       // index.json, Buys/<id>.json, Buys/<id>/<PO #>.pdf
+  root    : "Sales/Other/PO Recap",                           // in Documents: index.json, Buys/<id>.json, Buys/<id>/<PO #>.pdf
   admins  : ["saul@metro1solutions.com"],                     // only these sign-ins see Delete and Remove
   pdfWorker: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"
 };
@@ -232,7 +232,7 @@ const LS = {
 
 /* ============================== STATE =============================== */
 const S = {
-  acct:null, driveId:null,
+  acct:null, driveId:null, driveWeb:null,
   index:null,                 // { v, buys:[entry] }, newest read of index.json
   view:"home", buy:null, buyTag:null,
   job:null,                   // a read / check / save in progress: { kind:"new"|"add", key, files, phase, ... }
@@ -278,13 +278,15 @@ async function gAll(path){
   return out;
 }
 const itemUrl = p => "/drives/" + S.driveId + "/root:/" + encPath(p);
+/* A PO's PDF where it is now (the folder can be moved; the webUrl saved at upload is the fallback) */
+const pdfLink = (b, p) => S.driveWeb ? S.driveWeb + "/" + encPath(PATHS.pdf(b.id, p.po)) : (p.file && p.file.webUrl) || "";
 async function resolveDrive(){
   try {
     const s = await gf("/sites/" + CFG.host + ":" + CFG.site + "?$select=id");
-    const drives = await gAll("/sites/" + s.id + "/drives?$select=id,name");
+    const drives = await gAll("/sites/" + s.id + "/drives?$select=id,name,webUrl");
     const d = drives.find(x => x.name === CFG.drive) || drives[0];
     if (!d) throw new Error("No document library on " + CFG.site);
-    S.driveId = d.id;
+    S.driveId = d.id; S.driveWeb = d.webUrl;
   } catch(e){ e.site = CFG.site; throw e; }
 }
 /* JSON files: read through the pre-authenticated downloadUrl (a /content 302 is blocked by CORS), with their eTag */
@@ -686,7 +688,7 @@ function recapTable(b, rc, fl){
     rc.windows.map(w => '<th class="win" colspan="' + w.banners.reduce((t, x) => t + x.pos.length, 0) + '">' + esc(w.label) + "</th>").join("") +
     '<th rowspan="3" class="lab n">Total units</th><th rowspan="3" class="lab n">Ext cost</th><th rowspan="3" class="lab">Notes</th></tr><tr class="h1">' +
     rc.windows.map(w => w.banners.map(x => '<th colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
-    cols.map(p => "<th>" + (p.file && p.file.webUrl ? '<a href="' + esc(p.file.webUrl) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</th>").join("") + "</tr></thead><tbody>";
+    cols.map(p => "<th>" + (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</th>").join("") + "</tr></thead><tbody>";
   for (const r of rc.rows){
     const f = flagged.get(r.style);
     h += '<tr><td class="fz c-style">' + esc(r.style) + (f ? '<span class="flag" title="' + esc(f.join("\n")) + '">⚑</span>' : "") + '</td><td class="fz c-desc" title="' + esc(r.desc) + '">' + esc(r.desc) +
@@ -705,7 +707,7 @@ function poTable(b, rc){
     (isAdmin() ? "<th></th>" : "") + "</tr></thead><tbody>" +
     rc.pos.map(p => "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
       "</td><td>" + esc(p.buyer) + '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td><td>" +
-      (p.file && p.file.webUrl ? '<a href="' + esc(p.file.webUrl) + '" target="_blank" rel="noopener">' + esc(p.file.name || p.po + ".pdf") + "</a>" : esc((p.file && p.file.name) || "")) + "</td>" +
+      (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener">' + esc((p.file && p.file.name) || p.po + ".pdf") + "</a>" : "") + "</td>" +
       (isAdmin() ? '<td><button class="icon" data-act="rmPo" data-po="' + esc(p.po) + '" title="Remove PO ' + esc(p.po) + ' from this buy" aria-label="Remove PO ' + esc(p.po) + '">✕</button></td>' : "") + "</tr>").join("") +
     "</tbody></table>";
 }
