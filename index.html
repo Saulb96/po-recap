@@ -196,7 +196,7 @@ table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<script src="recap.js"></script>
+<script src="recap.js?v=20261028c"></script>
 <script>
 "use strict";
 /* ============================== CONFIG ============================== */
@@ -227,9 +227,17 @@ const errMsg = e => (e && e.message) || String(e);
 const isAdmin = () => !!(S.acct && CFG.admins.indexOf(String(S.acct.username || "").toLowerCase()) >= 0);
 const me = () => (S.acct && (S.acct.name || S.acct.username)) || "";
 const dayOf = t => { const d = new Date(t); return isNaN(d) ? "" : (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear(); };
+/* An error while the page starts shows on the loading card, never an endless spinner */
+function failGate(e){
+  const g = document.getElementById("gate"), m = document.getElementById("gateMsg");
+  if (!g || !m || g.style.display === "none") return;
+  m.innerHTML = '<span style="color:var(--bad)">The page didn\'t start: ' + esc(errMsg(e)) + ". Reload it with Ctrl+F5. If this stays, send this message to Saul.</span>";
+}
+addEventListener("error", e => failGate(e.error || e.message));
+addEventListener("unhandledrejection", e => failGate(e.reason));
 /* Ship window colours (recap.js TONES, shared with the Excel sheet): .tN headings in the stronger shade, cells lighter */
 (function(){
-  if (!R) return;
+  if (!R || !R.TONES) return;
   const s = document.createElement("style");
   s.textContent = R.TONES.map(([head, cell], i) =>
     ".g thead th.t" + i + ",.g tfoot td.t" + i + ",.sw.t" + i + "{background:#" + head + "}.g tbody td.t" + i + "{background:#" + cell + "}").join("");
@@ -922,6 +930,7 @@ async function start(){
   if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
   if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
   if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
+  if (!R.TONES){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
   msalApp = new msal.PublicClientApplication({
     auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },
