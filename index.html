@@ -138,7 +138,7 @@ table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-
 .g thead .fz{z-index:4;background:#f0f5fb}
 .g .c-style{left:0;min-width:108px;max-width:108px}
 .g .c-desc{left:108px;min-width:250px;max-width:250px;overflow:hidden;text-overflow:ellipsis}
-.g .c-cost{left:358px;min-width:74px;max-width:74px;box-shadow:inset -2px 0 0 var(--grid)}
+.g .c-cost{left:358px;min-width:100px;max-width:100px;overflow:hidden;text-overflow:ellipsis;box-shadow:inset -2px 0 0 var(--grid)}
 .g td.n,.g th.n{text-align:right}
 .g td.n.blank{color:var(--faint)}
 .g td.tot{font-weight:700}
@@ -149,6 +149,8 @@ table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-
 .g input.note:hover{border-color:var(--edge);background:rgba(255,255,255,.7)}
 .g input.note:focus{background:#fff;border-color:var(--edge)}
 .g .flag{color:var(--warn);margin-left:4px;cursor:help}
+.g .wst{border-left:2px solid rgba(95,108,125,.34)}
+.sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:7px;vertical-align:-1px;box-shadow:inset 0 0 0 1px rgba(22,32,44,.12)}
 
 /* confirm */
 .modal{position:fixed;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(22,32,44,.28)}
@@ -225,6 +227,15 @@ const errMsg = e => (e && e.message) || String(e);
 const isAdmin = () => !!(S.acct && CFG.admins.indexOf(String(S.acct.username || "").toLowerCase()) >= 0);
 const me = () => (S.acct && (S.acct.name || S.acct.username)) || "";
 const dayOf = t => { const d = new Date(t); return isNaN(d) ? "" : (d.getMonth() + 1) + "/" + d.getDate() + "/" + d.getFullYear(); };
+/* Ship window colours (recap.js TONES, shared with the Excel sheet): .tN headings in the stronger shade, cells lighter */
+(function(){
+  if (!R) return;
+  const s = document.createElement("style");
+  s.textContent = R.TONES.map(([head, cell], i) =>
+    ".g thead th.t" + i + ",.g tfoot td.t" + i + ",.sw.t" + i + "{background:#" + head + "}.g tbody td.t" + i + "{background:#" + cell + "}").join("");
+  document.head.appendChild(s);
+})();
+const swatch = tone => tone == null ? "" : '<i class="sw t' + tone + '" aria-hidden="true"></i>';
 const LS = {
   get(k, d){ try { const v = localStorage.getItem("porecap." + k); return v == null ? d : JSON.parse(v); } catch(e){ return d; } },
   set(k, v){ try { localStorage.setItem("porecap." + k, JSON.stringify(v)); } catch(e){} }
@@ -560,10 +571,11 @@ function renderJob(){
     h += '<div class="strip warn"><b>' + fl.length + " flag" + (fl.length > 1 ? "s" : "") + (job.kind === "add" ? " on the buy once these are added" : " to look at") + "</b><ul>" +
          fl.map(f => "<li>" + esc(f.text) + "</li>").join("") + "</ul></div>";
   if (acc.length){
+    const tones = R.recap({ customer:job.key, pos:acc }).tones;
     h += '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>Banner</th><th>Reference</th><th>Ship window</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>File</th></tr></thead><tbody>' +
       acc.map(p => {
         const ext = p.lines.reduce((t, l) => t + Math.round(l.units * l.cost * 100), 0) / 100;
-        return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.md(p.startShip) + "–" + R.md(p.cancel) +
+        return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + swatch(tones[p.po]) + R.md(p.startShip) + "–" + R.md(p.cancel) +
           '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(p.totalUnits) + '</td><td class="n">' + R.money(ext) + "</td><td>" + esc(p.file) + "</td></tr>";
       }).join("") + "</tbody></table></div>";
   }
@@ -676,36 +688,39 @@ function renderBuy(){
 const kpi = (v, label, sub) => '<div class="card kpi"><span class="lbl">' + label + '</span><div class="v">' + v + '</div><div class="s">' + (sub || "") + "</div></div>";
 function miniTable(head, list, key){
   return '<table class="t"><thead><tr><th>' + head + '</th><th class="n">POs</th><th class="n">Units</th><th class="n">Cost</th></tr></thead><tbody>' +
-    list.map(x => "<tr><td>" + esc(x[key]) + '</td><td class="n">' + x.pos + '</td><td class="n">' + R.fmt(x.units) + '</td><td class="n">' + R.money(x.ext) + "</td></tr>").join("") + "</tbody></table>";
+    list.map(x => "<tr><td>" + swatch(x.tone) + esc(x[key]) + '</td><td class="n">' + x.pos + '</td><td class="n">' + R.fmt(x.units) + '</td><td class="n">' + R.money(x.ext) + "</td></tr>").join("") + "</tbody></table>";
 }
 function recapTable(b, rc, fl){
   const flagged = new Map();
   for (const f of fl) if (f.style) (flagged.get(f.style) || flagged.set(f.style, []).get(f.style)).push(f.text);
   const cols = rc.windows.flatMap(w => w.banners.flatMap(x => x.pos));
   const notes = b.notes || {};
+  // each ship window in its colour, with a heavier line where the dates change
+  const starts = new Set(rc.windows.map(w => w.banners[0].pos[0].po));
+  const tone = p => "t" + rc.tones[p.po] + (starts.has(p.po) ? " wst" : "");
   let h = '<table class="g"><thead><tr class="h0">' +
     '<th rowspan="3" class="fz c-style lab">Style</th><th rowspan="3" class="fz c-desc lab">Description</th><th rowspan="3" class="fz c-cost lab n">Cost</th>' +
-    rc.windows.map(w => '<th class="win" colspan="' + w.banners.reduce((t, x) => t + x.pos.length, 0) + '">' + esc(w.label) + "</th>").join("") +
+    rc.windows.map(w => '<th class="win t' + w.tone + ' wst" colspan="' + w.banners.reduce((t, x) => t + x.pos.length, 0) + '">' + esc(w.label) + "</th>").join("") +
     '<th rowspan="3" class="lab n">Total units</th><th rowspan="3" class="lab n">Ext cost</th><th rowspan="3" class="lab">Notes</th></tr><tr class="h1">' +
-    rc.windows.map(w => w.banners.map(x => '<th colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
-    cols.map(p => "<th>" + (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</th>").join("") + "</tr></thead><tbody>";
+    rc.windows.map(w => w.banners.map((x, j) => '<th class="t' + w.tone + (j ? "" : " wst") + '" colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
+    cols.map(p => '<th class="' + tone(p) + '">' + (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</th>").join("") + "</tr></thead><tbody>";
   for (const r of rc.rows){
     const f = flagged.get(r.style);
     h += '<tr><td class="fz c-style">' + esc(r.style) + (f ? '<span class="flag" title="' + esc(f.join("\n")) + '">⚑</span>' : "") + '</td><td class="fz c-desc" title="' + esc(r.desc) + '">' + esc(r.desc) +
          '</td><td class="fz c-cost n">' + (r.cost != null ? R.money(r.cost) : esc(r.costs.map(c => R.money(c)).join(" / "))) + "</td>" +
-         cols.map(p => r.units[p.po] != null ? '<td class="n">' + R.fmt(r.units[p.po]) + "</td>" : '<td class="n blank"></td>').join("") +
+         cols.map(p => r.units[p.po] != null ? '<td class="n ' + tone(p) + '">' + R.fmt(r.units[p.po]) + "</td>" : '<td class="n blank ' + tone(p) + '"></td>').join("") +
          '<td class="n tot">' + R.fmt(r.total) + '</td><td class="n">' + R.money(r.ext) + '</td><td class="note"><input class="note" data-style="' + esc(r.style) + '" value="' + esc(notes[r.style] || "") +
          '" aria-label="Notes for ' + esc(r.style) + '" maxlength="300"></td></tr>';
   }
   h += '</tbody><tfoot><tr><td class="fz c-style">Total</td><td class="fz c-desc"></td><td class="fz c-cost"></td>' +
-       cols.map(p => '<td class="n">' + R.fmt(rc.poUnits[p.po]) + "</td>").join("") +
+       cols.map(p => '<td class="n ' + tone(p) + '">' + R.fmt(rc.poUnits[p.po]) + "</td>").join("") +
        '<td class="n">' + R.fmt(rc.total.units) + '</td><td class="n">' + R.money(rc.total.ext) + "</td><td></td></tr></tfoot></table>";
   return h;
 }
 function poTable(b, rc){
   return '<table class="t"><thead><tr><th>PO</th><th>Banner</th><th>Reference</th><th>Ordered</th><th>Start ship</th><th>Cancel</th><th>Buyer</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>Original</th>' +
     (isAdmin() ? "<th></th>" : "") + "</tr></thead><tbody>" +
-    rc.pos.map(p => "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
+    rc.pos.map(p => "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + swatch(rc.tones[p.po]) + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
       "</td><td>" + esc(p.buyer) + '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td><td>" +
       (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener">' + esc((p.file && p.file.name) || p.po + ".pdf") + "</a>" : "") + "</td>" +
       (isAdmin() ? '<td><button class="icon" data-act="rmPo" data-po="' + esc(p.po) + '" title="Remove PO ' + esc(p.po) + ' from this buy" aria-label="Remove PO ' + esc(p.po) + '">✕</button></td>' : "") + "</tr>").join("") +

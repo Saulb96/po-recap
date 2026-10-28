@@ -266,6 +266,10 @@
   }
 
   /* ============================== the recap ============================== */
+  // Each ship window's colour, in date order and round again after the sixth: [headings, cells]. The page and the
+  // Excel sheet use the same ones, so a window looks the same on screen and on paper.
+  const TONES = [['D9EAF7', 'EEF5FB'], ['E2EFDA', 'F3F8EF'], ['FCE4D6', 'FEF4EE'], ['E4DFEC', 'F3F0F7'], ['FFF2CC', 'FFFAE8'], ['DAEEF3', 'EEF7FA']];
+
   // POs grouped by ship window (start to cancel), then banner, then PO; one row per style.
   function recap(buy) {
     const c = customer(buy.customer) || { banners: [] };
@@ -281,6 +285,8 @@
       if (!b || b.banner !== p.banner) w.banners.push(b = { banner: p.banner, pos: [] });
       b.pos.push(p);
     }
+    const tones = {};
+    windows.forEach((w, i) => { w.tone = i % TONES.length; for (const b of w.banners) for (const p of b.pos) tones[p.po] = w.tone; });
     const byStyle = new Map();
     for (const p of pos) for (const l of p.lines) {
       let r = byStyle.get(l.style);
@@ -306,13 +312,13 @@
     }
     const sumOf = list => ({ pos: list.length, units: list.reduce((t, p) => t + poUnits[p.po], 0), ext: Math.round(list.reduce((t, p) => t + poExt[p.po] * 100, 0)) / 100 });
     const all = sumOf(pos);
-    const byWindow = windows.map(w => Object.assign({ label: w.label }, sumOf(w.banners.flatMap(b => b.pos))));
+    const byWindow = windows.map(w => Object.assign({ label: w.label, tone: w.tone }, sumOf(w.banners.flatMap(b => b.pos))));
     const banners = [...new Set(pos.map(p => p.banner))].sort((a, b) => bannerAt(a) - bannerAt(b) || a.localeCompare(b));
     const byBanner = banners.map(b => Object.assign({ banner: b }, sumOf(pos.filter(p => p.banner === b))));
     const uniq = f => [...new Set(pos.map(f).filter(Boolean))].sort();
     const orders = uniq(p => p.orderDate);
     return {
-      windows, pos, rows, poUnits, poExt, byWindow, byBanner,
+      windows, pos, rows, poUnits, poExt, byWindow, byBanner, tones,
       total: all,
       summary: { customer: c.name || buy.customer, pos: all.pos, units: all.units, ext: all.ext, buyers: uniq(p => p.buyer), depts: uniq(p => p.dept),
                  orderFrom: orders[0] || '', orderTo: orders[orders.length - 1] || '', windows: windows.length },
@@ -365,6 +371,8 @@
     const merge = (r1, c1, r2, c2) => { if (r2 > r1 || c2 > c1) merges.push({ s: { r: r1, c: c1 }, e: { r: r2, c: c2 } }); };
 
     const cols = R.windows.flatMap(w => w.banners.flatMap(b => b.pos.map(p => p.po)));
+    // a style in its ship window's colour: the stronger shade for headings, the lighter one for the cells below
+    const tint = (s, tone, cells) => Object.assign({}, s, { fill: { patternType: 'solid', fgColor: { rgb: TONES[tone][cells ? 1 : 0] } } });
     const C = { check: 0, style: 1, desc: 2, cost: 3, po0: 4 };
     C.total = C.po0 + cols.length; C.ext = C.total + 1; C.notes = C.ext + 1;
 
@@ -387,7 +395,10 @@
     r++;
     const mini = (title, list, name) => {
       put(r, C.style, title, ST.head); put(r, C.desc, 'POs', ST.head); put(r, C.cost, 'Units', ST.head); put(r, C.po0, 'Cost', ST.head); r++;
-      for (const x of list) { put(r, C.style, x[name], ST.text); put(r, C.desc, x.pos, ST.units); put(r, C.cost, x.units, ST.units); put(r, C.po0, x.ext, ST.money); r++; }
+      for (const x of list) {
+        put(r, C.style, x[name], x.tone != null ? tint(ST.text, x.tone) : ST.text);
+        put(r, C.desc, x.pos, ST.units); put(r, C.cost, x.units, ST.units); put(r, C.po0, x.ext, ST.money); r++;
+      }
       r++;
     };
     mini('Ship window', R.byWindow, 'label');
@@ -402,12 +413,12 @@
     let c = C.po0;
     for (const w of R.windows) {
       const n = w.banners.reduce((t, b) => t + b.pos.length, 0);
-      for (let i = 0; i < n; i++) put(h0, c + i, i ? '' : w.label, ST.window);
+      for (let i = 0; i < n; i++) put(h0, c + i, i ? '' : w.label, tint(ST.window, w.tone));
       merge(h0, c, h0, c + n - 1);
       for (const b of w.banners) {
-        for (let i = 0; i < b.pos.length; i++) put(h0 + 1, c + i, i ? '' : b.banner, ST.head);
+        for (let i = 0; i < b.pos.length; i++) put(h0 + 1, c + i, i ? '' : b.banner, tint(ST.head, w.tone));
         merge(h0 + 1, c, h0 + 1, c + b.pos.length - 1);
-        for (const p of b.pos) put(h0 + 2, c++, /^[1-9]\d{0,14}$/.test(p.po) ? Number(p.po) : p.po, ST.head);
+        for (const p of b.pos) put(h0 + 2, c++, /^[1-9]\d{0,14}$/.test(p.po) ? Number(p.po) : p.po, tint(ST.head, w.tone));
       }
     }
     r = h0 + 3;
@@ -416,14 +427,14 @@
       put(r, C.style, row.style, ST.text);
       put(r, C.desc, row.desc, ST.wrap);
       put(r, C.cost, row.cost != null ? row.cost : row.costs.map(x => x.toFixed(2)).join(' / '), row.cost != null ? ST.money : ST.text);
-      cols.forEach((po, i) => put(r, C.po0 + i, row.units[po] != null ? row.units[po] : '', ST.units));
+      cols.forEach((po, i) => put(r, C.po0 + i, row.units[po] != null ? row.units[po] : '', tint(ST.units, R.tones[po], true)));
       put(r, C.total, row.total, ST.units);
       put(r, C.ext, row.ext, ST.money);
       put(r, C.notes, notes[row.style] || '', ST.wrap);
       r++;
     }
     put(r, C.check, '', ST.totalLabel); put(r, C.style, 'Total', ST.totalLabel); put(r, C.desc, '', ST.totalLabel); put(r, C.cost, '', ST.totalLabel);
-    cols.forEach((po, i) => put(r, C.po0 + i, R.poUnits[po], ST.totalUnits));
+    cols.forEach((po, i) => put(r, C.po0 + i, R.poUnits[po], tint(ST.totalUnits, R.tones[po])));
     put(r, C.total, R.total.units, ST.totalUnits); put(r, C.ext, R.total.ext, ST.totalMoney); put(r, C.notes, '', ST.totalLabel);
     r += 3;
 
@@ -456,6 +467,6 @@
     return s;
   }
 
-  return { CUSTOMERS, customer, read, readMarmaxx, rows, checkBatch, flags, recap, worksheet, sheetName, defaultName,
+  return { CUSTOMERS, TONES, customer, read, readMarmaxx, rows, checkBatch, flags, recap, worksheet, sheetName, defaultName,
            int, num, iso, md, mdy, fmt, money, words, colName };
 });

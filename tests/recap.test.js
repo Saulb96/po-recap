@@ -217,6 +217,30 @@ test('worksheet: title, summary, three heading rows, Check first and Notes last,
   assert.equal(v('C7'), '10/1/2026');
 });
 
+test('ship windows each get a colour, in date order and round again after the sixth', () => {
+  const b = buy();
+  b.pos = Array.from({ length: 7 }, (_, i) => P({ po: '90020' + i, ref: 'D' + i, start: '10/' + (10 + i) + '/2026', cancel: '10/' + (17 + i) + '/2026' }, [LINES[0]]));
+  const R = Recap.recap(b);
+  assert.deepEqual(R.windows.map(w => w.tone), [0, 1, 2, 3, 4, 5, 0]);
+  assert.equal(R.tones['900206'], 0);
+  assert.deepEqual(R.byWindow.map(w => w.tone), [0, 1, 2, 3, 4, 5, 0]);
+});
+
+test('worksheet: each ship window keeps its colour from heading to totals, cells in the lighter shade', () => {
+  const ws = Recap.worksheet(buy());
+  const fill = a => ws[a] && ws[a].s && ws[a].s.fill && ws[a].s.fill.fgColor.rgb;
+  const h = +Object.keys(ws).find(k => k[0] !== '!' && ws[k].v === 'Check').slice(1);
+  const [w0, w1] = Recap.TONES;
+  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + h)), [w0[0], w0[0], w1[0], w1[0]], 'ship window headings');
+  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + (h + 1))), [w0[0], w0[0], w1[0], w1[0]], 'banner headings');
+  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + (h + 2))), [w0[0], w0[0], w1[0], w1[0]], 'PO # headings');
+  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + (h + 4))), [w0[1], w0[1], w1[1], w1[1]], 'units, blanks too');
+  assert.deepEqual(['E', 'G'].map(c => fill(c + (h + 6))), [w0[0], w1[0]], 'totals');
+  assert.equal(fill('I' + (h + 4)), undefined, 'Total units stays uncoloured');
+  const windowRow = +Object.keys(ws).find(k => k[0] === 'B' && ws[k].v === '10/12–10/19').slice(1);
+  assert.equal(fill('B' + windowRow), w1[0], 'the summary\'s ship window row');
+});
+
 test('sheet names: Excel-safe, 31 characters, never twice in one file', () => {
   const used = new Set();
   assert.equal(Recap.sheetName('Marmaxx buy 10/27', used), 'Marmaxx buy 10-27');
