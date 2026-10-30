@@ -232,8 +232,8 @@ details.dist .tw{padding:0 16px 12px}
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<script src="recap.js?v=20261030c"></script>
-<script src="mail.js?v=20261030c"></script>
+<script src="recap.js?v=20261030e"></script>
+<script src="mail.js?v=20261030e"></script>
 <script>
 "use strict";
 /* ============================== CONFIG ============================== */
@@ -257,12 +257,15 @@ const PATHS = {
   buys : CFG.root + "/Buys",
   buy  : id => CFG.root + "/Buys/" + id + ".json",
   dir  : id => CFG.root + "/Buys/" + id,
-  pdf  : (id, po) => CFG.root + "/Buys/" + id + "/" + po + ".pdf",
+  // a PO's file carries its version when the PO has one (a revised Burlington PO), so a newer one never overwrites the
+  // one in use before it's saved; an unversioned PO's is <po>.pdf
+  pdf  : (id, po, v) => CFG.root + "/Buys/" + id + "/" + po + (v ? "-v" + v : "") + ".pdf",
   // a distro's file carries its version, so a newer one never overwrites the one in use before it's saved
   distro: (id, po, v, ext) => CFG.root + "/Buys/" + id + "/" + po + "-distro-v" + (v || 0) + "." + (ext || "pdf"),
   packs: CFG.root + "/Master/case-packs.json"   // the saved copy of Master Sheet Live's case packs, for everyone
 };
 const distroPath = (id, p) => PATHS.distro(id, p.po, p.distro.version, p.distro.file && p.distro.file.ext);
+const pdfPath = (id, p) => PATHS.pdf(id, p.po, p.version);
 const extOf = name => { const m = /\.([a-z0-9]{2,5})$/i.exec(String(name || "")); return m ? m[1].toLowerCase() : ""; };
 const R = window.Recap;
 const $ = s => document.querySelector(s);
@@ -346,7 +349,7 @@ async function gAll(path){
 }
 const itemUrl = p => "/drives/" + S.driveId + "/root:/" + encPath(p);
 /* A PO's PDF where it is now (the folder can be moved; the webUrl saved at upload is the fallback) */
-const pdfLink = (b, p) => S.driveWeb ? S.driveWeb + "/" + encPath(PATHS.pdf(b.id, p.po)) : (p.file && p.file.webUrl) || "";
+const pdfLink = (b, p) => S.driveWeb ? S.driveWeb + "/" + encPath(pdfPath(b.id, p)) : (p.file && p.file.webUrl) || "";
 async function resolveDrive(){
   try {
     const s = await gf("/sites/" + CFG.host + ":" + CFG.site + "?$select=id");
@@ -630,10 +633,20 @@ function dropJob(){ if (S.job){ S.job.cancelled = true; S.job = null; } }
 async function recheck(job){
   if (job.kind === "add" && !S.buy) throw CANCELLED;
   await loadIndex();
-  const here = job.kind === "add" ? S.buy.pos.map(p => p.po) : [];
-  const others = S.index.buys.filter(b => !(job.kind === "add" && b.id === S.buy.id));
+  if (job.kind === "add"){
+    // this buy as it is now, so a PO someone else just added, took out or brought up to date is checked against
+    // (S.buy takes it only if nothing was saved from this page while it was being read, a note say)
+    const id = S.buy.id, tag = S.buyTag, got = await readJson(PATHS.buy(id));
+    if (!got) throw new Error("this buy isn't there any more: someone deleted it");
+    if (!S.buy || S.buy.id !== id) throw CANCELLED;
+    if (S.buyTag === tag) setBuy(got.data, got.etag);
+    job.cur = got.data;
+  }
+  const cur = job.kind === "add" ? job.cur : null;
+  const here = cur ? cur.pos.map(p => ({ po:p.po, version:p.version || 0 })) : [];
+  const others = S.index.buys.filter(b => !(cur && b.id === cur.id));
   const has = {};
-  if (job.kind === "add") for (const p of S.buy.pos) if (p.distro) has[p.po] = p.distro;
+  if (cur) for (const p of cur.pos) if (p.distro) has[p.po] = p.distro;
   job.chk = R.checkBatch(job.results, here, others, has);
   // what wasn't read, said once each
   if (job.skipped.length) job.chk.notes.push(job.skipped.length + " file" + (job.skipped.length > 1 ? "s" : "") + " skipped: not a PDF, an email or an Excel distro (" +
@@ -650,8 +663,9 @@ async function saveJob(){
     const name = ($("#jobName") && $("#jobName").value.trim()) || job.name;
     job.name = name;
   }
+  if (S.task){ job.failed = "Wait for “" + S.task.what + "” to finish, then save."; renderJob(); return; }
   job.phase = "saving"; job.at = 0; job.failed = null; job.uploaded = []; renderJob();
-  const sig = c => c.accepted.map(p => p.po).join() + "|" + c.distros.map(d => d.po + ":" + (d.distro.version || 0)).join();
+  const sig = c => c.accepted.map(p => p.po + ":" + (p.version || 0) + ":" + (p.replaces == null ? "" : p.replaces)).join() + "|" + c.distros.map(d => d.po + ":" + (d.distro.version || 0)).join();
   const before = sig(job.chk);
   try {
     await recheck(job);
@@ -660,12 +674,17 @@ async function saveJob(){
       renderJob(); return;
     }
     const id = job.kind === "new" ? newId() : S.buy.id;
+    job.buyId = id;
     await ensurePath(PATHS.dir(id));
     const up = async (path, blob, type) => { if (job.cancelled) throw CANCELLED; job.at++; renderJob(); const it = await uploadPdf(path, blob, type); job.uploaded.push(path); return it; };
-    const saved = [];
+    // one copy of the file for each PO it covers (a Burlington release can cover several), so moving or removing one
+    // PO never touches another's
+    const saved = [], replacing = new Set(job.chk.accepted.filter(p => p.replaces != null).map(p => p.po));
     for (const p of job.chk.accepted){
-      const it = await up(PATHS.pdf(id, p.po), job.files.get(p.file), "application/pdf");
-      saved.push(Object.assign({}, p, { file:{ name:p.file, path:PATHS.pdf(id, p.po), webUrl:it && it.webUrl } }));
+      const path = pdfPath(id, p), it = await up(path, job.files.get(p.file), "application/pdf");
+      const rec = Object.assign({}, p, { file:{ name:p.file, path, webUrl:it && it.webUrl } });
+      delete rec.replaces;
+      saved.push(rec);
     }
     const distros = [];
     for (const d of job.chk.distros){
@@ -686,22 +705,43 @@ async function saveJob(){
       }
       return { replaced, lost };
     };
-    let buy, out = { replaced:[], lost:[] };
+    let buy, out = { replaced:[], lost:[] }, swapped = [], lostPo = [];
     if (job.kind === "new"){
       const now = new Date().toISOString();
       out = attach(saved);
       buy = { v:1, id, name:job.name, customer:job.key, created:now, by:me(), updated:now, updatedBy:me(), pos:saved, notes:{} };
       await writeJson(PATHS.buy(id), buy, null);
     } else {
-      buy = await mutateBuy(id, d => { for (const p of saved) if (!d.pos.some(x => x.po === p.po)) d.pos.push(p); out = attach(d.pos); });
+      // on the buy as SharePoint has it now: a newer version takes its PO's place (keeping its distro; the notes on its
+      // styles are the buy's and stay); a PO someone else added meanwhile, or a newer version whose PO has left the buy
+      // since, isn't saved, and is said
+      buy = await mutateBuy(id, d => {
+        swapped = []; lostPo = [];
+        for (const p of saved){
+          const i = d.pos.findIndex(x => x.po === p.po);
+          if (i < 0){ if (replacing.has(p.po)) lostPo.push(p); else d.pos.push(p); continue; }
+          const cur = d.pos[i];
+          if ((p.version || 0) <= (cur.version || 0)){ lostPo.push(p); continue; }
+          d.pos[i] = Object.assign({}, p, cur.distro ? { distro:cur.distro } : {}, { revised:{ from:cur.version || 0, at:new Date().toISOString(), by:me() } });
+          swapped.push({ po:p.po, from:cur.version || 0, to:p.version, path:pdfPath(id, cur) });
+        }
+        out = attach(d.pos);
+      });
     }
-    // an older distro's file goes once the newer one is saved in its place; a distro that found no place goes too
-    for (const path of out.replaced) if (!job.uploaded.includes(path)) await delItem(path).catch(e => console.error(e));
-    for (const d of out.lost) await delItem(PATHS.distro(id, d.po, d.version, d.file.ext)).catch(e => console.error(e));
-    await updateIndex(putEntry(buy));
+    // files the saved buy no longer points to: an older version's PDF, an older distro, uploads that found no place
+    const refd = new Set(buy.pos.flatMap(p => [pdfPath(id, p)].concat(p.distro ? [distroPath(id, p)] : [])));
+    const drop = path => refd.has(path) ? null : delItem(path).catch(e => console.error(e));
+    for (const x of swapped) await drop(x.path);
+    for (const p of lostPo) await drop(pdfPath(id, p));
+    for (const path of out.replaced) if (!job.uploaded.includes(path)) await drop(path);
+    for (const d of out.lost) await drop(PATHS.distro(id, d.po, d.version, d.file.ext));
     S.job = null;
-    if (out.lost.length) setSave("Saved, but not the distro for " + out.lost.map(d => d.po).join(", ") + ": someone else removed the PO or saved a newer distro meanwhile.", true);
-    else setSave("Saved");
+    const miss = [], info = swapped.map(x => "PO " + x.po + " is now version " + x.to + " (was " + (x.from ? "version " + x.from : "unnumbered") + ")");
+    if (lostPo.length) miss.push("not PO " + lostPo.map(p => p.po).join(", ") + ": someone else saved " + (lostPo.length > 1 ? "them" : "it") + " in this buy, or took " + (lostPo.length > 1 ? "them" : "it") + " out of it, meanwhile");
+    if (out.lost.length) miss.push("not the distro for " + out.lost.map(d => d.po).join(", ") + ": someone else removed the PO or saved a newer distro meanwhile");
+    try { await updateIndex(putEntry(buy)); }
+    catch(e){ miss.push("the buys list wasn't brought up to date (" + errMsg(e) + "): reload the page"); }
+    setSave("Saved" + (miss.length ? ", but " + miss.join("; ") : "") + (info.length ? ". " + info.join("; ") : "") + (miss.length || info.length ? "." : ""), miss.length > 0);
     if (job.kind === "new") location.hash = "#/buy/" + id;
     else { S.adding = false; renderBuy(); loadMaster(); }   // new styles may need the case-pack copy brought up to date
   } catch(e){
@@ -709,7 +749,11 @@ async function saveJob(){
       // a new buy's files go; on an existing buy only the files this save uploaded (none is in the buy yet)
       try {
         if (job.kind === "new"){ if (job.newId) await delItem(PATHS.dir(job.newId)); }
-        else for (const path of job.uploaded || []) await delItem(path);
+        else if ((job.uploaded || []).length){
+          const got = await readJson(PATHS.buy(job.buyId));
+          const refd = new Set(got ? got.data.pos.flatMap(p => [pdfPath(job.buyId, p)].concat(p.distro ? [distroPath(job.buyId, p)] : [])) : []);
+          for (const path of job.uploaded) if (!refd.has(path)) await delItem(path);
+        }
       } catch(e2){ console.error(e2); }
       if (S.job === job) endJob();
       return;
@@ -740,7 +784,9 @@ function renderJob(){
   const chk = job.chk || { accepted:[], refused:[], notes:[], distros:[] };
   const acc = chk.accepted, dis = chk.distros;
   // the buy as it would be: its POs, the new ones, and each distro on its PO
-  const pos = (job.kind === "add" ? S.buy.pos : []).concat(acc).map(p => { const d = dis.find(x => x.po === p.po); return d ? Object.assign({}, p, { distro:d.distro }) : p; });
+  const pos = (job.kind === "add" ? S.buy.pos.filter(p => !acc.some(a => a.po === p.po)) : []).concat(acc).map(p => { const d = dis.find(x => x.po === p.po); return d ? Object.assign({}, p, { distro:d.distro }) : p; });
+  const cust = R.customer(job.key) || {}, L = R.labelOf(job.key), reps = acc.filter(p => p.replaces != null).length;
+  const vText = p => p.version ? "v" + p.version + (p.replaces != null ? " (replaces " + (p.replaces ? "v" + p.replaces : "the unnumbered one") + ")" : "") : "";
   const fl = acc.length || dis.length ? R.flags(job.key, pos) : [];
   const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
   let h = "";
@@ -751,7 +797,7 @@ function renderJob(){
     const bits = [];
     if (acc.length){
       const rc = R.recap({ customer:job.key, pos:acc });
-      bits.push("<b>" + plural(acc.length, "PO") + "</b> · " + R.fmt(rc.total.units) + " units · " + R.money(rc.total.ext) + " · " + plural(rc.windows.length, "ship window"));
+      bits.push("<b>" + plural(acc.length, "PO") + "</b>" + (reps ? " (" + reps + " replacing an older version)" : "") + " · " + R.fmt(rc.total.units) + " units · " + R.money(rc.total.ext) + " · " + plural(rc.windows.length, "ship window"));
     }
     if (dis.length) bits.push("<b>" + plural(dis.length, "distro") + "</b> for " + dis.map(d => esc(d.po) + (d.replaces ? " (replaces version " + esc(d.replaces) + ")" : "")).join(", "));
     h += '<div class="strip ok"><span>Ready to ' + (job.kind === "new" ? "save" : "add") + ": " + bits.join(" · ") + "</span></div>";
@@ -767,14 +813,14 @@ function renderJob(){
          fl.map(f => "<li>" + esc(f.text) + "</li>").join("") + "</ul></div>";
   if (acc.length){
     const tones = R.recap({ customer:job.key, pos:acc }).tones;
-    h += '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>Banner</th><th>Reference</th><th>Ship window</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>File</th></tr></thead><tbody>' +
+    h += '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>' + esc(L.banner) + "</th><th>" + (cust.ref === false ? "Version" : "Reference") + '</th><th>Ship window</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>File</th></tr></thead><tbody>' +
       acc.map(p => {
         const ext = p.lines.reduce((t, l) => t + Math.round(l.units * l.cost * 100), 0) / 100;
-        return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + swatch(tones[p.po]) + R.md(p.startShip) + "–" + R.md(p.cancel) +
+        return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(cust.ref === false ? vText(p) : p.ref) + "</td><td>" + swatch(tones[p.po]) + R.md(p.startShip) + "–" + R.md(p.cancel) +
           '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(p.totalUnits) + '</td><td class="n">' + R.money(ext) + "</td><td>" + esc(p.file) + "</td></tr>";
       }).join("") + "</tbody></table></div>";
   }
-  const what = [acc.length && plural(acc.length, "PO"), dis.length && plural(dis.length, "distro")].filter(Boolean).join(" and ");
+  const what = [acc.length - reps && plural(acc.length - reps, "PO"), reps && plural(reps, "new PO version"), dis.length && plural(dis.length, "distro")].filter(Boolean).join(" and ");
   h += '<div class="row"><button class="btn primary" data-act="saveJob"' + (acc.length || dis.length ? "" : " disabled") + ">" + (job.kind === "new" ? "Save buy" : "Add " + (what || "nothing")) +
        '</button><button class="btn" data-act="cancelJob">Cancel</button></div>';
   box.innerHTML = h;
@@ -800,7 +846,7 @@ function syncDrop(){
   d.classList.toggle("off", !on);
   d.setAttribute("aria-disabled", on ? "false" : "true");
   const hint = $("#dropHint");
-  if (hint) hint.textContent = S.job ? "Finish or cancel the files below first" : k ? "Or click to pick files · " + R.customer(k).name + " POs and distros, as PDFs, Excel or in emails" : "Pick a customer first";
+  if (hint) hint.textContent = S.job ? "Finish or cancel the files below first" : k ? "Or click to pick files · " + R.customer(k).name + (R.customer(k).readDistro ? " POs and distros, as PDFs, Excel or in emails" : " POs, as PDFs or in emails") : "Pick a customer first";
   const fb = $("#pickFolder");
   if (fb) fb.disabled = !on;
 }
@@ -884,36 +930,42 @@ function renderBuy(){
   const sm = rc.summary;
   const ordered = sm.orderFrom === sm.orderTo ? R.mdy(sm.orderFrom) : R.mdy(sm.orderFrom) + " – " + R.mdy(sm.orderTo);
   const withD = b.pos.filter(p => p.distro).length, noFob = b.pos.filter(p => !("fob" in p));
-  const fobs = [...new Set(b.pos.filter(p => "fob" in p).map(p => R.fobLabel(p.fob) || "not read"))];
-  const fobOff = cust.fobLA && b.pos.some(p => !R.fobIsLA(p.fob));
+  const L = R.labelOf(b.customer), hasD = !!cust.readDistro;
+  const fobOff = !!cust.fobOK && b.pos.some(p => !cust.fobOK(p.fob));
+  // the KPI says a term FOB's term (Destination) and puts where it is under it
+  const fobShort = [...new Set(b.pos.filter(p => "fob" in p).map(p => p.fob && p.fob.term ? R.fobLabel({ term:p.fob.term }) : R.fobLabel(p.fob) || "not read"))];
+  const fobTo = [...new Set(b.pos.filter(p => p.fob && p.fob.to).map(p => R.fobLabel(p.fob).replace(/^[^:]*:\s*/, "")))];
+  const vs = [...new Set(b.pos.map(p => p.version || 0))].sort((x, y) => x - y), later = b.pos.filter(p => (p.version || 0) > 1).length;
   let h = '<a class="back" href="#/">‹ All buys</a>';
   h += '<section class="card"><div class="head"><label class="fld name"><span>Buy</span><input id="buyName" value="' + esc(b.name) + '" maxlength="80"></label>' +
-       '<button class="btn" data-act="addOpen"' + (cust.read ? "" : " disabled") + '>Add POs or distros</button><button class="btn" data-act="exportOne">Export</button>' +
+       '<button class="btn" data-act="addOpen"' + (cust.read ? "" : " disabled") + '>Add POs' + (hasD ? " or distros" : "") + '</button><button class="btn" data-act="exportOne">Export</button>' +
        (isAdmin() ? '<button class="btn danger" data-act="delBuy">Delete</button>' : "") + "</div>" +
        '<div class="meta">' + esc(cust.name) + " · created " + dayOf(b.created) + " by " + esc(b.by) + (b.updatedBy && b.updated !== b.created ? " · last changed " + dayOf(b.updated) + " by " + esc(b.updatedBy) : "") +
-       " · buyer " + esc(sm.buyers.join(", ") || "—") + " · ordered " + ordered + (sm.depts.length ? " · dept " + esc(sm.depts.join(", ")) : "") + "</div>" +
+       (cust.buyer === false && !sm.buyers.length ? "" : " · buyer " + esc(sm.buyers.join(", ") || "—")) + " · ordered " + ordered + (sm.depts.length ? " · dept " + esc(sm.depts.join(", ")) : "") + "</div>" +
        '<div class="job" id="taskStrip"></div>' +
        (noFob.length && !S.task ? '<div class="job"><div class="strip"><span>' + noFob.length + " PO" + (noFob.length > 1 ? "s were" : " was") +
          " saved before FOB point was read, so it isn't shown or checked for " + (noFob.length > 1 ? "them" : "it") + '.</span><div class="spacer"></div><button class="btn sm" data-act="readFob">Read FOB from their PDFs</button></div></div>' : "") +
-       (S.adding ? '<div class="imp"><div class="drop off" id="drop" tabindex="0" role="button" aria-disabled="true"><div class="arrow">↓</div><div><b>Drop ' + esc(cust.name) + ' POs or distros to add here</b><span class="hint" id="dropHint"></span></div></div>' +
+       (S.adding ? '<div class="imp"><div class="drop off" id="drop" tabindex="0" role="button" aria-disabled="true"><div class="arrow">↓</div><div><b>Drop ' + esc(cust.name) + ' POs' + (hasD ? " or distros" : "") + ' to add here</b><span class="hint" id="dropHint"></span></div></div>' +
                    '<div class="drops"><button class="btn" id="pickFolder" data-act="pickFolder" disabled>Pick a folder</button><button class="btn" data-act="addClose">Cancel</button></div></div><div class="job" id="job"></div>' : "") +
        "</section>";
   h += '<div class="kpis">' +
-       kpi(rc.total.pos, "POs", rc.byBanner.map(x => x.pos + " " + x.banner).join(" · ")) +
+       kpi(rc.total.pos, "POs", esc(rc.byBanner.map(x => x.pos + " " + x.banner).join(" · "))) +
        kpi(R.fmt(rc.total.units), "Units", rc.rows.length + " styles") +
        kpi(R.money(rc.total.ext), "Cost", "at the PO's unit costs") +
        kpi(rc.windows.length, "Ship windows", rc.windows.length ? rc.windows[0].label + (rc.windows.length > 1 ? " to " + rc.windows[rc.windows.length - 1].label : "") : "") +
-       kpi(withD + " of " + b.pos.length, "Distros in", withD === b.pos.length ? "every PO has one" : (b.pos.length - withD) + " still to come", withD < b.pos.length ? "warn" : "") +
-       kpi(esc(fobs.join(", ") || "—"), "FOB point", noFob.length ? noFob.length + " not read yet" : fobOff ? "not LA: flagged" : cust.fobLA ? "LA" : "", fobOff) + "</div>";
+       (hasD ? kpi(withD + " of " + b.pos.length, "Distros in", withD === b.pos.length ? "every PO has one" : (b.pos.length - withD) + " still to come", withD < b.pos.length ? "warn" : "")
+             : kpi(!vs.length ? "—" : vs.length === 1 ? (vs[0] ? "v" + vs[0] : "—") : "v" + vs[0] + "–v" + vs[vs.length - 1], "PO version", later ? later + " revised by " + esc(cust.name) : "as first sent")) +
+       kpi(esc(fobShort.join(", ") || "—"), "FOB point", noFob.length ? noFob.length + " not read yet" : fobOff ? "not " + esc(cust.fobRule) + ": flagged"
+             : fobTo.length ? esc(fobTo.join(" · ")) : cust.fobRule === "LA" ? "LA" : "", fobOff) + "</div>";
   h += '<div class="pair"><section class="card"><div class="card-hd"><h2>By ship window</h2></div><div class="tw">' +
-       miniTable("Ship window", rc.byWindow, "label") + '</div></section><section class="card"><div class="card-hd"><h2>By banner</h2></div><div class="tw">' +
-       miniTable("Banner", rc.byBanner, "banner") + "</div></section></div>";
+       miniTable("Ship window", rc.byWindow, "label") + '</div></section><section class="card"><div class="card-hd"><h2>By ' + esc(L.banner === "DC" ? "DC" : "banner") + '</h2></div><div class="tw">' +
+       miniTable(L.banner, rc.byBanner, "banner") + "</div></section></div>";
   const CHIP = { fob:"FOB", distro:"Distro", pack:"Pack", pair:"Pair", cost:"Cost", desc:"Description", twice:"Twice" };
   if (fl.length) h += '<section class="card"><div class="card-hd"><h2>Flags · ' + fl.length + '</h2><div class="spacer"></div><span class="hint">Worked out from the POs every time the buy opens</span></div><ul class="flags">' +
                       fl.map(f => '<li><span class="chip">' + (CHIP[f.kind] || f.kind) + "</span><span>" + esc(f.text) + "</span></li>").join("") + "</ul></section>";
   h += '<section class="card"><div class="card-hd"><h2>Recap</h2><div class="spacer"></div><span class="hint" id="masterSt">' + masterStatus() + '</span><span class="hint">· Tick POs to move them · Notes save as you type</span></div>' +
        '<div id="pickbar"></div><div class="tbl-scroll">' + recapTable(b, rc, fl, master) + "</div></section>";
-  h += distroCard(b, rc, master);
+  if (hasD) h += distroCard(b, rc, master);
   h += '<section class="card"><div class="card-hd"><h2>POs · ' + b.pos.length + '</h2></div><div class="tw">' + poTable(b, rc) + "</div></section>";
   $("#view").innerHTML = h;
   restoreEdits(keep);
@@ -926,7 +978,7 @@ function masterStatus(){
   if (m.loading) return "Case packs: checking Master Sheet Live…" + (m.data ? " (meanwhile from the saved copy)" : "");
   if (m.error) return 'Case packs not checked: ' + esc(m.error) + ' · <a href="#" data-act="masterRetry">Try again</a>';
   if (m.source === "live") return "Case packs from Master Sheet Live, read " + whenText(m.at) +
-    (m.saveError ? ' (<span class="bad-t">the saved copy couldn\'t be updated: ' + esc(m.saveError) + "</span>)" : "; the saved copy is updated") + ' · <a href="#" data-act="masterRetry">Read again</a>';
+    (m.saveError ? ' (<span class="bad-t">the saved copy couldn\'t be updated: ' + esc(m.saveError) + "</span>)" : m.saveDenied ? "" : "; the saved copy is updated") + ' · <a href="#" data-act="masterRetry">Read again</a>';
   return "Case packs from the saved copy of Master Sheet Live, updated " + whenText(m.at) + (m.by ? " by " + esc(m.by) : "") +
     (m.missing.length ? '; <span class="bad-t">' + m.missing.length + " style" + (m.missing.length > 1 ? "s aren't" : " isn't") + " on it yet</span>" : "") +
     ' · <a href="#" data-act="masterRetry">Update from Master Sheet Live</a>';
@@ -942,26 +994,41 @@ const PACK_AGE = 24 * 3600 * 1000,   // the copy is refreshed (when it can be) o
       LIVE_FRESH = 15 * 60 * 1000,   // a read of Master Sheet Live answers everything for 15 minutes: no re-download
       COPY_FRESH = 60 * 1000;        // the copy is read again after a minute, so someone else's update shows here
 const packStyles = buys => [...new Set(buys.flatMap(b => b.pos.flatMap(p => p.lines.map(l => l.style).concat(p.distro ? p.distro.lines.map(l => l.style) : []))))];
+// each style on these buys, with the Master Sheet Live columns its pack is checked in (Master, or Inner for Burlington)
+const packNeeds = buys => {
+  const out = new Map();
+  for (const b of buys){
+    const f = (R.customer(b.customer) || {}).packField || "master";
+    for (const st of packStyles([b])) (out.get(st) || out.set(st, new Set()).get(st)).add(f);
+  }
+  return out;
+};
+const SLOT = { master:1, inner:4 };   // where each column's pack sits in a copied row
 let packWork = null;
-async function ensurePacks(styles, force, onStep){
+async function ensurePacks(needs, force, onStep){
+  const styles = [...needs.keys()];
   while (packWork) await packWork.catch(() => null);   // one at a time; the next then decides for itself
   packWork = (async () => {
     try {
       if (!force && S.live && Date.now() - S.live.at < LIVE_FRESH){
-        S.master = { data:S.live.data, at:new Date(S.live.at), source:"live", missing:[], saveError:S.live.saveError };
+        S.master = { data:S.live.data, at:new Date(S.live.at), source:"live", missing:[], saveError:S.live.saveError, saveDenied:S.live.saveDenied };
         return S.live.data;
       }
       if (force || !S.packCopy || Date.now() - S.packCopy.readAt > COPY_FRESH)
         S.packCopy = Object.assign((await readJson(PATHS.packs)) || { data:null, etag:null }, { readAt:Date.now() });
-      const copy = S.packCopy.data;
+      // a copy in an older format (before inner packs) counts as none: it's brought up to date like a missing one
+      const stale = !!S.packCopy.data && S.packCopy.data.v !== R.COPY_V;
+      const copy = stale ? null : S.packCopy.data;
       const on = s => copy && Object.prototype.hasOwnProperty.call(copy.styles, String(s).toUpperCase()) ? copy.styles[String(s).toUpperCase()] : null;
-      // styles the copy doesn't have, and those it has without a case pack: worth asking Master Sheet Live about
+      // styles the copy doesn't have, and those it has without the pack they're checked on: worth asking Master Sheet
+      // Live about
       const notOn = styles.filter(s => !on(s));
-      const ask = notOn.concat(styles.filter(s => on(s) && on(s).every(r => r[1] == null)));
+      const ask = notOn.concat(styles.filter(s => on(s) && [...needs.get(s)].some(f => on(s).every(r => r[SLOT[f]] == null))));
       const old = !copy || Date.now() - new Date(copy.updated).getTime() > PACK_AGE;
       const asCopy = extra => copy
         ? Object.assign({ data:R.expandMaster(copy, notOn.length > 0), at:new Date(copy.updated), source:"copy", by:copy.updatedBy, missing:notOn }, extra)
-        : Object.assign({ error:"there's no saved copy of the case packs yet, and Master Sheet Live couldn't be read" + (S.liveError ? " (" + S.liveError + ")" : "") }, extra);
+        : Object.assign({ error:(stale ? "the saved copy of the case packs is from an older PO Recap and has to be brought up to date" : "there's no saved copy of the case packs yet") +
+            ", and Master Sheet Live couldn't be read" + (S.liveError ? " (" + S.liveError + ")" : "") }, extra);
       if (force || ((ask.length || old) && !S.liveDenied)){
         // meanwhile the copy, so a style that's only off the copy doesn't read as off Master Sheet Live
         S.master = asCopy({ loading:true });
@@ -972,7 +1039,12 @@ async function ensurePacks(styles, force, onStep){
           S.live = { data:live, at:Date.now() };
           S.master = { data:live, at:new Date(), source:"live", missing:[] };
           const fresh = Object.assign(R.compactMaster(live), { updated:started, updatedBy:me(), source:CFG.master.name });
-          try { await savePackCopy(fresh); } catch(e){ S.master.saveError = S.live.saveError = errMsg(e); }
+          try { await savePackCopy(fresh); }
+          catch(e){
+            // the Master folder can be read only for most people: then those who can write it keep the copy up to date
+            if (e.status === 403 || e.status === 401) S.master.saveDenied = S.live.saveDenied = true;
+            else S.master.saveError = S.live.saveError = errMsg(e);
+          }
           return live;
         } catch(e){
           S.liveDenied = true; S.liveError = errMsg(e);   // not asked again this visit, unless someone clicks to update
@@ -998,7 +1070,7 @@ async function savePackCopy(fresh){
       if (e.status !== 412) throw e;
       const cur = await readJson(PATHS.packs);
       S.packCopy = Object.assign(cur || { data:null, etag:null }, { readAt:Date.now() });
-      if (cur && cur.data && cur.data.updated >= fresh.updated) return;
+      if (cur && cur.data && cur.data.v === R.COPY_V && cur.data.updated >= fresh.updated) return;
     }
   }
   throw new Error("it kept changing while being saved");
@@ -1008,7 +1080,7 @@ function loadMaster(force){
   const b = S.buy;
   if (!b) return;
   const paint = () => { if (S.view === "buy" && S.buy && S.buy.id === b.id) renderBuy(); };
-  ensurePacks(packStyles([b]), force, paint).then(paint);
+  ensurePacks(packNeeds([b]), force, paint).then(paint);
 }
 /* What a buy's sheet says about its case packs: only its own styles count */
 function packNote(b){
@@ -1042,18 +1114,19 @@ function recapTable(b, rc, fl, master){
   const flagged = new Map();
   for (const f of fl) if (f.style) (flagged.get(f.style) || flagged.set(f.style, []).get(f.style)).push(f.text);
   const cols = rc.windows.flatMap(w => w.banners.flatMap(x => x.pos));
-  const notes = b.notes || {};
+  const notes = b.notes || {}, cust = R.customer(b.customer) || {}, L = R.labelOf(b.customer);
   // each ship window in its colour, with a heavier line where the dates change
   const starts = new Set(rc.windows.map(w => w.banners[0].pos[0].po));
   const tone = p => "t" + rc.tones[p.po] + (starts.has(p.po) ? " wst" : "");
   // a dot under each PO for its distro: green when it's in and matches, red when it doesn't, grey when not in yet
   const dot = p => {
+    if (!cust.readDistro) return "";
     if (!p.distro) return '<i class="dd" data-tip="No distro yet for PO ' + esc(p.po) + '"></i>';
     const n = R.distroIssues(p).length;
     return '<i class="dd ' + (n ? "bad" : "ok") + '" data-tip="' + esc(n ? n + " thing" + (n > 1 ? "s" : "") + " on PO " + p.po + "'s distro to look at (see Distro below)" : "PO " + p.po + "'s distro is in and matches") + '"></i>';
   };
   let h = '<table class="g"><thead><tr class="h0">' +
-    '<th rowspan="3" class="fz c-style lab">Style</th><th rowspan="3" class="fz c-desc lab">Description</th><th rowspan="3" class="fz c-cost lab n">Cost</th><th rowspan="3" class="fz c-pack lab n">Pack</th>' +
+    '<th rowspan="3" class="fz c-style lab">Style</th><th rowspan="3" class="fz c-desc lab">Description</th><th rowspan="3" class="fz c-cost lab n">Cost</th><th rowspan="3" class="fz c-pack lab n">' + esc(L.pack) + '</th>' +
     rc.windows.map(w => '<th class="win t' + w.tone + ' wst" colspan="' + w.banners.reduce((t, x) => t + x.pos.length, 0) + '">' + esc(w.label) + "</th>").join("") +
     '<th rowspan="3" class="lab n">Total units</th><th rowspan="3" class="lab n">Ext cost</th><th rowspan="3" class="lab">Notes</th></tr><tr class="h1">' +
     rc.windows.map(w => w.banners.map((x, j) => '<th class="t' + w.tone + (j ? "" : " wst") + '" colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
@@ -1068,7 +1141,7 @@ function recapTable(b, rc, fl, master){
     h += '<tr><td class="fz c-style">' + esc(r.style) + (f ? '<span class="flag" data-tip="' + esc(f.join("\n")) + '">⚑</span>' : "") + "</td>" +
          (r.varies.desc ? '<td class="fz c-desc bad" data-tip="' + esc(R.variantsTip(r, "desc")) + '">' : '<td class="fz c-desc" title="' + esc(r.desc) + '">') + esc(r.desc) + "</td>" +
          (r.varies.cost ? '<td class="fz c-cost n bad" data-tip="' + esc(R.variantsTip(r, "cost")) + '">' + esc(r.costs.map(c => R.money(c)).join(" / ")) : '<td class="fz c-cost n">' + R.money(r.cost)) + "</td>" +
-         packTd(r, master) +
+         packTd(r, master, cust.packField) +
          cols.map(cell).join("") +
          '<td class="n tot">' + R.fmt(r.total) + '</td><td class="n">' + R.money(r.ext) + '</td><td class="note"><input class="note" data-style="' + esc(r.style) + '" value="' + esc(notes[r.style] || "") +
          '" aria-label="Notes for ' + esc(r.style) + '" maxlength="300"></td></tr>';
@@ -1079,27 +1152,30 @@ function recapTable(b, rc, fl, master){
   return h;
 }
 /* The Pack cell: the POs' pack, red when the POs disagree or Master Sheet Live says otherwise, with the details on hover */
-function packTd(r, master){
-  const pk = R.packCell(r, master), m = pk.master;
-  const tip = [r.packs.length > 1 ? "The POs give packs " + r.packs.join(" / ") + "." : "The POs give pack " + r.packs.join("") + "."];
+function packTd(r, master, field){
+  const pk = R.packCell(r, master, field), m = pk.master, word = field === "inner" ? "prepack" : "pack";
+  const tip = [r.packs.length > 1 ? "The POs give " + word + "s " + r.packs.join(" / ") + "." : "The POs give " + word + " " + r.packs.join("") + "."];
   if (master){
-    if (!m) tip.push(r.style + (master.copyOnly ? " isn't on the saved copy of Master Sheet Live yet: it updates when someone who can open Master Sheet Live opens this buy." : " isn't on Master Sheet Live."));
-    else if (m.pack == null) tip.push(r.style + " has no case pack on Master Sheet Live.");
+    if (!m) tip.push(r.style + (master.copyOnly ? " isn't on the saved copy of Master Sheet Live yet: it's added when someone who keeps the copy up to date opens this buy." : " isn't on Master Sheet Live."));
+    else if (m.pack == null) tip.push(r.style + (field === "inner" ? " has no inner pack" : " has no case pack") + " on Master Sheet Live.");
     else tip.push(R.masterSays(m) + ".");
   } else tip.push("Not checked against Master Sheet Live yet.");
   return '<td class="fz c-pack n' + (pk.bad ? " bad" : "") + '" data-tip="' + esc(tip.join("\n")) + '">' + esc(r.packs.join(" / ")) + "</td>";
 }
 const distroLink = (b, p) => S.driveWeb ? S.driveWeb + "/" + encPath(distroPath(b.id, p)) : "";
 function poTable(b, rc){
-  return '<table class="t"><thead><tr><th>PO</th><th>Banner</th><th>Reference</th><th>Ordered</th><th>Start ship</th><th>Cancel</th><th>FOB point</th><th>Buyer</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>Distro</th><th>Original</th>' +
+  const cu = R.customer(b.customer) || {}, L = R.labelOf(b.customer), hasD = !!cu.readDistro, buyer = cu.buyer !== false;
+  const ver = p => p.version ? "v" + esc(p.version) + (p.revised ? ' <span class="muted">(was ' + (p.revised.from ? "v" + esc(p.revised.from) : "unnumbered") + ")</span>" : "") : "";
+  return '<table class="t"><thead><tr><th>PO</th><th>' + esc(L.banner) + "</th><th>" + (cu.ref === false ? "Version" : "Reference") + '</th><th>Ordered</th><th>Start ship</th><th>Cancel</th><th>FOB point</th>' +
+    (buyer ? "<th>Buyer</th>" : "") + '<th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th>' + (hasD ? "<th>Distro</th>" : "") + "<th>Original</th>" +
     (isAdmin() ? "<th></th>" : "") + "</tr></thead><tbody>" +
     rc.pos.map(p => {
-      const fobBad = (R.customer(b.customer) || {}).fobLA && !R.fobIsLA(p.fob);
+      const fobBad = !!cu.fobOK && !cu.fobOK(p.fob);
       const fob = !("fob" in p) ? '<span class="muted">not read</span>' : p.fob ? esc(R.fobLabel(p.fob)) : '<span class="muted">not on the PO</span>';
       const n = p.distro ? R.distroIssues(p).length : 0;
       const dist = !p.distro ? '<span class="muted">not yet</span>' : '<span class="' + (n ? "bad-t" : "ok-t") + '">' + (p.distro.version ? "v" + esc(p.distro.version) : "in") + (n ? " · " + n + " to look at" : " ✓") + "</span>";
-      return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(p.ref) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + swatch(rc.tones[p.po]) + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
-        "</td><td" + (fobBad ? ' class="bad" data-tip="FOB point isn\'t LA"' : "") + ">" + fob + "</td><td>" + esc(p.buyer) + '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td><td>" + dist + "</td><td>" +
+      return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + (cu.ref === false ? ver(p) : esc(p.ref)) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + swatch(rc.tones[p.po]) + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
+        "</td><td" + (fobBad ? ' class="bad" data-tip="FOB point isn\'t ' + esc(cu.fobRule) + '"' : "") + ">" + fob + "</td>" + (buyer ? "<td>" + esc(p.buyer) + "</td>" : "") + '<td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td>" + (hasD ? "<td>" + dist + "</td>" : "") + "<td>" +
         (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener">' + esc(baseName((p.file && p.file.name) || p.po + ".pdf")) + "</a>" : "") + "</td>" +
         (isAdmin() ? '<td><button class="icon" data-act="rmPo" data-po="' + esc(p.po) + '" title="Remove PO ' + esc(p.po) + ' from this buy" aria-label="Remove PO ' + esc(p.po) + '">✕</button></td>' : "") + "</tr>";
     }).join("") +
@@ -1158,8 +1234,9 @@ async function readFobFromPdfs(){
     for (const [i, p] of need.entries()){
       if (task.cancelled) throw CANCELLED;
       task.what = "Reading FOB point from PO " + p.po + " (" + (i + 1) + " of " + need.length + ")"; paintTask();
-      const r = R.read(b.customer, await pdfPages(await downloadBytes(PATHS.pdf(b.id, p.po)), task));
-      got[p.po] = r.po ? r.po.fob : null;
+      const r = R.read(b.customer, await pdfPages(await downloadBytes(pdfPath(b.id, p)), task));
+      const one = R.posOf(r).find(x => x.po === p.po);
+      got[p.po] = one ? one.fob : null;
     }
     task.noCancel = true; task.what = "Saving"; paintTask();
     await mutateBuy(b.id, d => { for (const p of d.pos) if (p.po in got && !("fob" in p)) p.fob = got[p.po]; });
@@ -1176,6 +1253,7 @@ async function readFobFromPdfs(){
 async function moveDialog(){
   const b = S.buy, pos = [...S.pick].filter(po => b.pos.some(p => p.po === po)).sort();
   if (!pos.length || S.task) return;
+  if (S.job && S.job.phase === "saving"){ setSave("Wait for the save to finish, then move the POs.", true); return; }
   if (pos.length === b.pos.length){ setSave("Every PO is ticked: leave at least one in this buy (or rename the buy instead).", true); return; }
   try { await loadIndex(); } catch(e){ setSave("The buys list couldn't be read: " + errMsg(e), true); return; }
   const others = S.index.buys.filter(x => x.id !== b.id && x.customer === b.customer).sort((x, y) => String(y.created).localeCompare(String(x.created)));
@@ -1227,7 +1305,7 @@ async function movePos(pos, targetId, newName){
     for (const p of moving){
       if (task.cancelled) throw CANCELLED;
       task.what = "Moving PO " + p.po + "'s files"; paintTask();
-      await move(PATHS.pdf(srcId, p.po), tid, p.po + ".pdf"); moved.push([PATHS.pdf(tid, p.po), PATHS.dir(srcId)]);
+      const pf = pdfPath(srcId, p); await move(pf, tid, pf.split("/").pop()); moved.push([pdfPath(tid, p), PATHS.dir(srcId)]);
       if (p.distro){ const f = distroPath(srcId, p); await move(f, tid, f.split("/").pop()); moved.push([distroPath(tid, p), PATHS.dir(srcId)]); }
     }
     if (task.cancelled) throw CANCELLED;
@@ -1235,14 +1313,18 @@ async function movePos(pos, targetId, newName){
     const styles = new Set(moving.flatMap(p => p.lines.map(l => l.style)));
     const notes = {};
     for (const s of styles) if (src.notes && src.notes[s]) notes[s] = src.notes[s];
-    const recs = moving.map(p => Object.assign({}, p, { file:Object.assign({}, p.file, { path:PATHS.pdf(tid, p.po) }) }));
+    const recs = moving.map(p => Object.assign({}, p, { file:Object.assign({}, p.file, { path:pdfPath(tid, p) }) }));
     if (!targetId){
       const now = new Date().toISOString();
       target = { v:1, id:tid, name:newName, customer:src.customer, created:now, by:me(), updated:now, updatedBy:me(), pos:recs, notes, splitFrom:{ id:srcId, name:src.name } };
       await writeJson(PATHS.buy(tid), target, null);
     } else {
       target = await mutateBuy(tid, d => {
-        for (const r of recs) if (!d.pos.some(x => x.po === r.po)) d.pos.push(r);
+        // a PO already there (a move cut short and run again) stays, unless this is a newer version of it
+        for (const r of recs){
+          const i = d.pos.findIndex(x => x.po === r.po);
+          if (i < 0) d.pos.push(r); else if ((r.version || 0) > (d.pos[i].version || 0)) d.pos[i] = r;
+        }
         d.notes = d.notes || {};
         for (const [s, n] of Object.entries(notes)) d.notes[s] = d.notes[s] && d.notes[s] !== n ? d.notes[s] + " · " + n : n;
       });
@@ -1250,7 +1332,12 @@ async function movePos(pos, targetId, newName){
     wroteTarget = true;
     // on the list at once, so it can be found even if this buy can't be updated below
     await updateIndex(putEntry(target));
+    // a PO that changed here while it was being moved (a newer version or distro saved meanwhile) stays: the move is
+    // run again to take the newer one across
+    const sig = p => (p.version || 0) + ":" + (p.distro ? (p.distro.version || 0) : "-");
     const left = await mutateBuy(srcId, d => {
+      const changed = d.pos.filter(p => pos.includes(p.po) && !moving.some(m => m.po === p.po && sig(m) === sig(p)));
+      if (changed.length) throw new Error("PO " + changed.map(p => p.po).join(", ") + " changed in this buy while it was being moved");
       d.pos = d.pos.filter(p => !pos.includes(p.po));
       const still = new Set(d.pos.flatMap(p => p.lines.map(l => l.style)));
       for (const s of Object.keys(d.notes || {})) if (!still.has(s)) delete d.notes[s];
@@ -1356,7 +1443,7 @@ async function exportBuys(ids){
     // the case packs for every style in these buys, from the saved copy (brought up to date when it can be); the sheet
     // says what they were checked against, or that they weren't
     setSave("Checking the case packs…");
-    await ensurePacks(packStyles(buys));
+    await ensurePacks(packNeeds(buys));
     const master = masterData();
     for (const b of buys){
       XLSX.utils.book_append_sheet(wb, R.worksheet(b, null, master, packNote(b)), R.sheetName(b.name, used));
@@ -1406,9 +1493,9 @@ async function removePo(po){
   if (!await confirmBox("Remove PO " + po + "?", "It leaves “" + b.name + "”, and its PDF" + (had && had.distro ? " and distro go" : " goes") + " to the SharePoint recycle bin. You can drop it in again with Add POs.", "Remove PO")) return;
   setSave("Removing…");
   try {
-    const data = await mutateBuy(b.id, d => { d.pos = d.pos.filter(p => p.po !== po); });
-    await delItem(PATHS.pdf(b.id, po));
-    if (had && had.distro) await delItem(distroPath(b.id, had));
+    let gone = null;
+    const data = await mutateBuy(b.id, d => { gone = d.pos.find(p => p.po === po) || null; d.pos = d.pos.filter(p => p.po !== po); });
+    if (gone){ await delItem(pdfPath(b.id, gone)); if (gone.distro) await delItem(distroPath(b.id, gone)); }
     await updateIndex(putEntry(data));
     setSave("Removed PO " + po);
     renderBuy();
@@ -1510,7 +1597,7 @@ async function start(){
   if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
   if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
   if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
-  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
+  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !R.readBurlington || !R.posOf || !R.COPY_V || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
   msalApp = new msal.PublicClientApplication({
     auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },

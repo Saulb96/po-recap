@@ -181,11 +181,16 @@
     const words = list => list.map(i => i.s).filter(t => t !== ':').join(' ').trim();
     return { city: words(row.items.slice(c + 1, s)), state: words(row.items.slice(s + 1)) };
   }
-  const fobLabel = f => !f ? '' : f.city && f.state ? f.city + ', ' + f.state : (f.city || f.state || 'blank');
-  // LA is Los Angeles: city LOS ANGELES, or LA written in the city box. LA in the state box is Louisiana, so it's flagged.
+  // A Marmaxx FOB point is a place ({ city, state }); a Burlington one a term ({ term }), with the DC it names when the
+  // term is DESTINATION ("Destination: ZZ Sample (SMP) DC, Sampletown CA").
+  const fobLabel = f => !f ? '' : f.term
+    ? cap(f.term) + (f.to ? ': ' + f.to + (f.city ? ', ' + cap(f.city) + (f.state ? ' ' + f.state : '') : '') : '')
+    : f.city && f.state ? f.city + ', ' + f.state : (f.city || f.state || 'blank');
+  // LA is Los Angeles: city LOS ANGELES, or LA written in the city box (or as the term). LA in the state box is
+  // Louisiana, so it's flagged.
   function fobIsLA(f) {
     if (!f) return true;   // not read (a buy saved before FOB was read): nothing to flag
-    const city = f.city.toUpperCase();
+    const city = String(f.term && !f.to ? f.term : f.city || '').toUpperCase();
     return /\bLOS ANGELES\b/.test(city) || city === 'LA';
   }
 
@@ -371,22 +376,210 @@
       dcs: d.dcs.sort((a, b) => byNo(a.dc, b.dc)), lines: d.lines } };
   }
 
+  /* ============================== Burlington ============================== */
+  // A Burlington purchase order release as its portal prints it. Page 1, the approval sheet: the PO numbers it covers, the
+  // order / start ship / cancel dates and department under their headings, the release's total units and cost, and the
+  // F.O.B term. Then the terms pages, then the details sheet with the destination DC. Then one block per prepack:
+  // "Purchase Order: 9002025 01" (the PO number, printed in two pieces), the prepack and how many of them, the style,
+  // description, colour and cost of one unit, the units in one prepack, and three lines working the sums out again,
+  // which are checked. One release can cover several PO numbers, so this gives { pos: [...] }. Every page's foot says
+  // "po version: N"; a revised release carries a higher one.
+  const MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
+  const dmy = s => {
+    const m = /^(\d{1,2})-([A-Z]{3})-(\d{2}|\d{4})$/i.exec(String(s).trim());
+    if (!m || !MONTHS[m[2].toUpperCase()] || +m[1] < 1 || +m[1] > 31) return null;
+    return (m[3].length === 2 ? '20' + m[3] : m[3]) + '-' + String(MONTHS[m[2].toUpperCase()]).padStart(2, '0') + '-' + m[1].padStart(2, '0');
+  };
+  const cap = s => String(s).toLowerCase().replace(/(^|[\s/(-])([a-z])/g, (all, sp, ch) => sp + ch.toUpperCase());
+
+  function readBurlington(pages) {
+    const fail = (why, po) => ({ error: why, poNo: po || '' });
+    if (!pages.length) return fail('The file has no pages.');
+    const first = rows(pages[0]), firstText = first.map(r => r.text).join('\n');
+    if (!/Burlington Merchandising/i.test(firstText) || !/THIS SHEET COVERS APPROVAL FOR THE FOLLOWING PURCHASE ORDER/i.test(firstText))
+      return fail("This isn't a Burlington PO: page 1 isn't Burlington's approval sheet.");
+    // the value after a label on the same row ("Total Rel Units: 1,296"), the first one parse accepts
+    const after = (rs, re, parse) => {
+      for (const r of rs) {
+        const k = r.items.findIndex(i => re.test(i.s));
+        if (k < 0) continue;
+        const v = r.items.slice(k + 1).map(i => parse(i.s)).find(x => x != null && x !== '');
+        if (v != null) return v;
+      }
+      return null;
+    };
+    // the PO numbers a sheet covers: the numbers on the rows under its "THIS SHEET COVERS ..." line, down to the next label
+    const covered = (rs, re) => {
+      const at = rs.findIndex(r => re.test(r.text));
+      if (at < 0) return null;
+      const out = [];
+      for (const r of rs.slice(at + 1)) {
+        if (!r.items.every(i => /^\d{6,12}$/.test(i.s))) break;
+        out.push(...r.items.map(i => i.s));
+      }
+      return out;
+    };
+    const cover = covered(first, /THIS SHEET COVERS APPROVAL FOR THE FOLLOWING PURCHASE ORDER/i);
+    if (!cover.length) return fail("Page 1 doesn't list the PO numbers it covers.");
+    const no = cover[0];
+    if (new Set(cover).size !== cover.length) return fail('Page 1 lists a PO number twice.', no);
+
+    // the dates and department: each in the row under its heading, nearest the heading's middle
+    const labels = first.find(r => r.items.some(i => i.s === 'Order Date') && r.items.some(i => i.s === 'Start Ship Date'));
+    const values = labels && first.find(r => r.y < labels.y - 2 && r.y >= labels.y - 30);
+    const under = s => { const l = labels && labels.items.find(i => i.s === s); const v = l && values && nearest(values.items, center(l), 40); return v ? v.s : ''; };
+    const order = dmy(under('Order Date')), start = dmy(under('Start Ship Date')), cancel = dmy(under('Ship Cancel Date')), dept = under('Department');
+    const noDate = [!order && 'order', !start && 'start ship', !cancel && 'cancel'].filter(Boolean);
+    if (noDate.length) return fail(`The ${words(noDate)} date${noDate.length > 1 ? 's' : ''} couldn't be read on page 1.`, no);
+    const relUnits = after(first, /^Total Rel Units:?$/, int), relCost = after(first, /^Total Rel Cost:?$/, num);
+    if (relUnits == null || relCost == null) return fail("The release's total units and cost couldn't be read on page 1.", no);
+    const release = after(first, /^Release:?$/, s => /^[A-Z0-9]{1,3}$/.test(s) ? s : null) || '';
+    const fobRow = first.find(r => r.items.some(i => /^F\.?O\.?B\.?\s*:?$/.test(i.s)));
+    const fobTerm = fobRow ? fobRow.items.slice(fobRow.items.findIndex(i => /^F\.?O\.?B\.?\s*:?$/.test(i.s)) + 1).map(i => i.s).join(' ').trim().toUpperCase() : '';
+
+    // the version at the foot of every page: one, and the same on all of them
+    const versions = new Set();
+    for (const page of pages) { const v = after(rows(page), /^po version:?$/i, int); if (v != null) versions.add(v); }
+    if (!versions.size) return fail("The PO version couldn't be read (the pages have no “po version” at the foot).", no);
+    if (versions.size > 1) return fail(`The pages carry different PO versions (${[...versions].sort((a, b) => a - b).join(', ')}): the file mixes two versions.`, no);
+    const version = [...versions][0];
+
+    // the details sheet: the same PO numbers again, and the destination DC (its name, street, then city state zip)
+    const di = pages.findIndex(p => p.items.some(i => /THIS SHEET COVERS DETAILS FOR THE FOLLOWING PURCHASE ORDER/i.test(i.s)));
+    if (di < 0) return fail("The details sheet (with the destination DC) isn't in the file.", no);
+    const drs = rows(pages[di]);
+    const dCover = covered(drs, /THIS SHEET COVERS DETAILS FOR THE FOLLOWING PURCHASE ORDER/i);
+    if (!dCover || dCover.slice().sort().join() !== cover.slice().sort().join())
+      return fail(`The details sheet is for PO ${words(dCover || [])}, but page 1 is for PO ${words(cover)}.`, no);
+    const dRelUnits = after(drs, /^Total Rel Units:?$/, int);
+    if (dRelUnits != null && dRelUnits !== relUnits) return fail(`The details sheet says ${fmt(dRelUnits)} units, but page 1 says ${fmt(relUnits)}.`, no);
+    const destLabel = pages[di].items.find(i => i.s === 'Destination');
+    const dest = destLabel ? drs.filter(r => r.y < destLabel.y - 2 && r.y >= destLabel.y - 80)
+      .map(r => r.items.filter(i => i.x >= destLabel.x - 120)).filter(l => l.length) : [];
+    const cityAt = dest.findIndex(l => l.length >= 3 && /^\d{5}(-\d{4})?$/.test(l[l.length - 1].s) && /^[A-Z]{2}$/.test(l[l.length - 2].s));
+    if (!dest.length || cityAt < 1) return fail("The destination DC couldn't be read on the details sheet.", no);
+    const joined = l => l.map(i => i.s).join(' ').replace(/\s+/g, ' ').trim();
+    const cityRow = dest[cityAt];
+    const dc = { name: joined(dest[0]), street: dest.slice(1, cityAt).map(joined).join(', '), city: joined(cityRow.slice(0, -2)),
+                 state: cityRow[cityRow.length - 2].s, zip: cityRow[cityRow.length - 1].s };
+
+    // the prepack blocks, read as one run of rows over the pages after the details sheet (a block can cross a page);
+    // each page's own heading rows (page number, version, the vendor heading and the row under it) are left out
+    const run = [];
+    for (const page of pages.slice(di + 1)) {
+      let skipNext = false;
+      for (const r of rows(page)) {
+        if (skipNext) { skipNext = false; continue; }
+        if (r.items.some(i => i.s === 'Vendor #') && r.items.some(i => i.s === 'Vendor Name')) { skipNext = true; continue; }
+        if (/^Page \d+/.test(r.text) || /^po version/i.test(r.text)) continue;
+        run.push(Object.assign({ page: page.n }, r));
+      }
+    }
+    const blocks = [];
+    let b = null;
+    const between = (r, from, to) => {
+      const a = r.items.findIndex(i => from.test(i.s)), z = to ? r.items.findIndex((i, k) => k > a && to.test(i.s)) : -1;
+      return a < 0 ? '' : r.items.slice(a + 1, z < 0 ? undefined : z).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim();
+    };
+    for (const r of run) {
+      const t = r.text;
+      if (/^Purchase Order:/.test(t)) {
+        const digits = between(r, /^Purchase Order:?$/).replace(/\s+/g, '');
+        if (!/^\d{6,12}$/.test(digits)) return fail(`A line's PO number couldn't be read on page ${r.page}.`, no);
+        blocks.push(b = { po: digits, page: r.page, sizes: [], qtyX: null, ln: blocks.filter(x => x.po === digits).length + 1 });
+        continue;
+      }
+      if (!b) continue;
+      if (/^PREPACK:/.test(t)) {
+        b.prepack = between(r, /^PREPACK:?$/, /^Quantity:?$/);
+        b.qty = int(between(r, /^Quantity:?$/, /^prepack\(s\)$/));
+        b.type = between(r, /^Type:?$/);
+      } else if (/^Ship Type:/.test(t)) b.shipType = between(r, /^Ship Type:?$/);
+      else if (/^Style:/.test(t)) { b.style = between(r, /^Style:?$/, /^Desc:?$/).toUpperCase(); b.desc = between(r, /^Desc:?$/); }
+      else if (/^Color:/.test(t)) { b.color = between(r, /^Color:?$/, /^Cost:?$/); b.cost = num(between(r, /^Cost:?$/)); }
+      else if (/^Size\b/.test(t) && r.items.some(i => i.s === 'Quantity')) b.qtyX = center(r.items.find(i => i.s === 'Quantity'));
+      else if (/^Units:/.test(t)) { b.per = int(between(r, /^Units:?$/, /^Ext cost:?$/)); b.ext = num(between(r, /^Ext cost:?$/)); b.qtyX = null; }
+      else if (/^Packing Instructions:/.test(t)) b.packing = between(r, /^Packing Instructions:?$/);
+      else if (/^Prepack\s/.test(t)) {
+        const m = /^Prepack\s+(.+?)\s+contains\s+([\d,]+)\s+units at total ext cost of\s+\$?([\d,]+\.\d{2})$/.exec(t);
+        if (m) b.says1 = { prepack: m[1], per: int(m[2]), ext: num(m[3]) };
+      } else if (/^[\d,]+\s+prepack\(s\),/.test(t)) {
+        const m2 = /^([\d,]+)\s+prepack\(s\), at cost of\s+\$?([\d,]+\.\d{2})\s*=\s*\$?([\d,]+\.\d{2})$/.exec(t);
+        const m3 = /^([\d,]+)\s+prepack\(s\),\s+([\d,]+)\s+units per prepack\s*=\s*([\d,]+)\s+units$/.exec(t);
+        if (m2) b.says2 = { qty: int(m2[1]), ext: num(m2[2]), total: num(m2[3]) };
+        if (m3) b.says3 = { qty: int(m3[1]), per: int(m3[2]), units: int(m3[3]) };
+      } else if (b.qtyX != null) {
+        // a size row: its name, and its quantity under the Quantity heading
+        const q = r.items[r.items.length - 1];
+        if (r.items.length >= 2 && int(q.s) != null && Math.abs(center(q) - b.qtyX) <= 40) b.sizes.push({ size: joined(r.items.slice(0, -1)), qty: int(q.s) });
+      }
+    }
+    if (!blocks.length) return fail('No PO lines were found.', no);
+
+    const pos = new Map(cover.map(n => [n, []]));
+    for (const x of blocks) {
+      const where = `PO ${x.po} line ${x.ln}${x.style ? ' (' + x.style + ')' : ''}`;
+      if (!pos.has(x.po)) return fail(`${where} is for a PO page 1 doesn't list (page 1 lists ${words(cover)}).`, x.po);
+      if (x.prepack == null) return fail(`${where} isn't a prepack line, and this reader only knows prepacks so far.`, x.po);
+      const gone = [!x.style && 'style', x.qty == null && 'prepack quantity', x.cost == null && 'cost', x.per == null && 'units per prepack', x.ext == null && 'ext cost']
+        .filter(Boolean);
+      if (gone.length) return fail(`${where}: no ${words(gone)} could be read.`, x.po);
+      if (/[\s:]/.test(x.style)) return fail(`PO ${x.po} line ${x.ln}: the style couldn't be read (it came out as “${x.style}”).`, x.po);
+      // Burlington's own sums, checked: the sizes make one prepack; a prepack's units at the cost make its ext cost;
+      // the three summing-up lines say the same
+      if (x.sizes.length && x.sizes.reduce((t, s) => t + s.qty, 0) !== x.per)
+        return fail(`${where}: the sizes add up to ${fmt(x.sizes.reduce((t, s) => t + s.qty, 0))} units, but a prepack has ${fmt(x.per)}.`, x.po);
+      if (cents(x.per, x.cost) !== Math.round(x.ext * 100)) return fail(`${where}: ${x.per} units at ${money(x.cost)} isn't the ${money(x.ext)} it says a prepack costs.`, x.po);
+      const s1 = x.says1, s2 = x.says2, s3 = x.says3;
+      if (!s1 || !s2 || !s3) return fail(`${where}: the lines that sum the prepack up couldn't be read.`, x.po);
+      if (s1.prepack !== x.prepack || s1.per !== x.per || Math.round(s1.ext * 100) !== Math.round(x.ext * 100) || s2.qty !== x.qty || Math.round(s2.ext * 100) !== Math.round(x.ext * 100) ||
+          Math.round(s2.total * 100) !== x.qty * Math.round(x.ext * 100) || s3.qty !== x.qty || s3.per !== x.per || s3.units !== x.qty * x.per)
+        return fail(`${where}: the prepack's sums don't agree (${fmt(x.qty)} prepacks of ${fmt(x.per)} units at ${money(x.ext)}).`, x.po);
+      pos.get(x.po).push({ ln: String(x.ln), catg: '', code: '', style: x.style, desc: x.desc || '', color: x.color || '', cost: x.cost,
+        units: x.qty * x.per, pack: x.per, prepacks: x.qty, prepack: x.prepack, packType: x.type || '' });
+    }
+    const empty = cover.filter(n => !pos.get(n).length);
+    if (empty.length) return fail(`Page 1 lists PO ${words(empty)}, but the file has no lines for ${empty.length > 1 ? 'them' : 'it'}.`, empty[0]);
+    const all = [...pos.values()].flat();
+    const units = all.reduce((t, l) => t + l.units, 0), ext = all.reduce((t, l) => t + cents(l.units, l.cost), 0);
+    if (units !== relUnits) return fail(`The lines add up to ${fmt(units)} units, but page 1 says ${fmt(relUnits)}.`, no);
+    if (ext !== Math.round(relCost * 100)) return fail(`The lines add up to ${money(ext / 100)}, but page 1 says ${money(relCost)}.`, no);
+
+    const fob = fobTerm ? Object.assign({ term: fobTerm, city: '', state: '' }, fobTerm === 'DESTINATION' ? { to: dc.name, city: dc.city, state: dc.state } : {})
+      : fobRow ? { term: '', city: '', state: '' } : null;
+    return { pos: cover.map(n => ({ po: n, banner: dc.name, dc, dept, ref: '', buyer: '', orderDate: order, startShip: start, cancel,
+      fob, version, release, totalUnits: pos.get(n).reduce((t, l) => t + l.units, 0), lines: pos.get(n) })) };
+  }
+
   /* ============================== customers ============================== */
   // The dropdown's list, in its order. A customer without a reader shows but can't be picked yet.
-  // fobLA: the customer's POs should ship FOB Los Angeles; any other FOB point is flagged.
+  // fobOK: whether a PO's FOB point is the one the customer's POs should have; any other is flagged (fobRule says
+  // which in the flag). packField: the Master Sheet Live column a line's pack is checked against: Marmaxx's vendor pack
+  // is the carton (Master), Burlington's prepack the inner pack (Inner). label: what the page and the sheet call the
+  // second heading row (a banner, or a DC), the pack and the pack check. ref and buyer: whether the POs carry a
+  // reference number and a buyer, so the page shows those columns.
   const CUSTOMERS = [
-    { key: 'marmaxx', name: 'Marmaxx', read: readMarmaxx, readDistro: readMarmaxxDistro, readDistroSheet, banners: ['Marshalls', 'TJ Maxx'], pairs: true, fobLA: true },
-    { key: 'burlington', name: 'Burlington', read: null, soon: 'needs sample POs', banners: [], pairs: false },
+    { key: 'marmaxx', name: 'Marmaxx', read: readMarmaxx, readDistro: readMarmaxxDistro, readDistroSheet, banners: ['Marshalls', 'TJ Maxx'], pairs: true,
+      fobOK: f => fobIsLA(f), fobRule: 'LA', packField: 'master', ref: true, buyer: true,
+      label: { banner: 'Banner', banners: 'banners', pack: 'Pack', packs: 'Case packs', packWord: 'case pack' } },
+    { key: 'burlington', name: 'Burlington', read: readBurlington, banners: [], pairs: false,
+      fobOK: f => !f || f.term === 'DESTINATION' || fobIsLA(f), fobRule: 'Destination or LA', packField: 'inner', ref: false, buyer: false,
+      label: { banner: 'DC', banners: 'DCs', pack: 'Prepack', packs: 'Prepacks', packWord: 'prepack' } },
   ];
   const customer = key => CUSTOMERS.find(c => c.key === key) || null;
+  const LABEL = CUSTOMERS[0].label;
+  const labelOf = key => (customer(key) || {}).label || LABEL;
 
-  // A PDF is a PO or the customer's distribution instructions for one: { po }, { distro } or { error }.
+  // A PDF is a PO or the customer's distribution instructions for one: { po }, { pos } (a file covering several PO
+  // numbers), { distro } or { error }.
   function read(key, pages, fileName) {
     const c = customer(key);
     if (!c || !c.read) return { error: 'There is no reader for ' + (c ? c.name : key) + ' yet.' };
     if (c.readDistro && isDistroPages(pages)) return c.readDistro(pages, fileName);
-    return c.read(pages);
+    return c.read(pages, fileName);
   }
+  // A reader's result as the POs it holds
+  const posOf = r => r && r.pos ? r.pos : r && r.po ? [r.po] : [];
   // A spreadsheet can only be a distribution sheet: { distro }, { error } or { notDistro } when it isn't one.
   function readSheet(key, table, fileName) {
     const c = customer(key);
@@ -397,37 +590,54 @@
   const defaultName = (name, d) => name + ' buy ' + (d.getMonth() + 1) + '/' + d.getDate();
 
   /* ============================== checks before saving ============================== */
-  // results: [{ file, po } | { file, distro } | { file, error, poNo }] from the readers. here: the PO numbers already in
-  // this buy (when files are added to it). others: [{ name, pos: [PO numbers] }], every other buy. hasDistro: { PO: the
-  // distro it already has }. Nothing is dropped silently: each file ends up accepted, refused with its reason, or named
-  // in a note (the same PO dropped twice, an older distro version).
+  // results: [{ file, po } | { file, pos } | { file, distro } | { file, error, poNo }] from the readers. here: the POs
+  // already in this buy (when files are added to it), as PO numbers or { po, version }. others: [{ name, pos: [PO
+  // numbers] }], every other buy. hasDistro: { PO: the distro it already has }. Nothing is dropped silently: each file
+  // ends up accepted, refused with its reason, or named in a note (the same PO dropped twice, an older version).
+  // A PO that carries a version (Burlington's "po version") and is already in this buy is replaced by a newer version
+  // (accepted with replaces: the version it replaces); the same or an older version is refused. A PO without one is
+  // refused when it's already in the buy, as before.
   function checkBatch(results, here, others, hasDistro) {
     const refused = [], notes = [], groups = new Map();
+    const inBuy = new Map((here || []).map(h => typeof h === 'string' ? [h, 0] : [h.po, h.version || 0]));
     for (const r of results) {
       if (r.error) { refused.push({ file: r.file, po: r.poNo || '', why: r.error }); continue; }
       if (r.distro) continue;
-      const g = groups.get(r.po.po) || [];
-      g.push(r); groups.set(r.po.po, g);
+      const list = posOf(r);
+      if (!list.length) { refused.push({ file: r.file, po: '', why: 'No PO was found in this file.' }); continue; }
+      for (const p of list) { const g = groups.get(p.po) || []; g.push({ file: r.file, po: p }); groups.set(p.po, g); }
     }
     const accepted = [];
+    const pv = x => x.po.version || 0;
     for (const [no, g] of groups) {
-      const same = g.every(r => JSON.stringify(r.po) === JSON.stringify(g[0].po));
-      if (!same) {
-        for (const r of g) refused.push({ file: r.file, po: no, why: `Two different versions of PO ${no} were dropped (${words(g.map(x => x.file))}). Drop only the one you want.` });
+      g.sort((a, b) => pv(b) - pv(a));
+      const topV = pv(g[0]), tops = g.filter(x => pv(x) === topV), older = g.filter(x => pv(x) < topV);
+      if (tops.some(x => JSON.stringify(x.po) !== JSON.stringify(tops[0].po))) {
+        for (const x of tops) refused.push({ file: x.file, po: no, why: topV
+          ? `Two different copies of PO ${no}, both version ${topV}, were dropped (${words(tops.map(y => y.file))}). Drop only the one you want.`
+          : `Two different versions of PO ${no} were dropped (${words(g.map(y => y.file))}). Drop only the one you want.` });
+        for (const x of older) refused.push({ file: x.file, po: no, why: `This version ${pv(x)} of PO ${no} isn't used: the version ${topV} copies dropped with it disagree.` });
         continue;
       }
-      if (g.length > 1) notes.push(`PO ${no} was dropped ${g.length} times (${words(g.map(x => x.file))}). It's read once.`);
-      const r = g[0];
-      if ((here || []).includes(no)) { refused.push({ file: r.file, po: no, why: `PO ${no} is already in this buy.` }); continue; }
+      if (tops.length > 1) notes.push(`PO ${no} was dropped ${tops.length} times (${words(tops.map(x => x.file))}). It's read once.`);
+      const r = tops[0];
+      for (const x of older) notes.push(`${x.file} is version ${pv(x)} of PO ${no}; version ${topV} (${r.file}) is the one used.`);
+      if (inBuy.has(no)) {
+        const hv = inBuy.get(no);
+        if (!topV || topV === hv) { refused.push({ file: r.file, po: no, why: `PO ${no} is already in this buy${topV ? ' (version ' + topV + ')' : ''}.` }); continue; }
+        if (topV < hv) { refused.push({ file: r.file, po: no, why: `PO ${no} is version ${hv} in this buy; this file is version ${topV}.` }); continue; }
+        accepted.push(Object.assign({ file: r.file }, r.po, { replaces: hv }));
+        continue;
+      }
       const other = (others || []).find(b => (b.pos || []).includes(no));
-      if (other) { refused.push({ file: r.file, po: no, why: `PO ${no} is already in “${other.name}”.` }); continue; }
+      if (other) { refused.push({ file: r.file, po: no, why: `PO ${no} is already in “${other.name}”.` + (topV ? ' Add this version to that buy to bring it up to date there.' : '') }); continue; }
       accepted.push(Object.assign({ file: r.file }, r.po));
     }
     accepted.sort((a, b) => byNo(a.po, b.po));
 
     // distribution instructions: each attaches to its PO, already in this buy or among the POs being saved with it. Of
     // several versions the newest is used; a distro the PO already has is replaced only by a newer version.
-    const poHere = new Set((here || []).concat(accepted.map(p => p.po)));
+    const poHere = new Set([...inBuy.keys()].concat(accepted.map(p => p.po)));
     const dgroups = new Map();
     for (const r of results) if (r.distro) { const g = dgroups.get(r.distro.po) || []; g.push(r); dgroups.set(r.distro.po, g); }
     const vOf = d => d.version || 0, vName = d => vOf(d) ? 'version ' + vOf(d) : 'unnumbered';
@@ -554,45 +764,51 @@
     if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
     return iso(String(v == null ? '' : v).trim().split(' ')[0]) || '';
   }
-  function masterPack(master, style) {
+  // field: the column a pack is checked against, 'master' (the carton) or 'inner' (the inner pack)
+  function masterPack(master, style, field) {
+    field = field || 'master';
     const list = master && master.styles.get(String(style).toUpperCase());
     if (!list || !list.length) return null;
-    const packed = list.filter(x => x.master != null);
-    if (!packed.length) return { pack: null, rows: list.length };
+    const packed = list.filter(x => x[field] != null);
+    if (!packed.length) return { pack: null, rows: list.length, field };
     const latest = packed.reduce((a, b) => (b.date > a.date || (b.date === a.date && b.row > a.row)) ? b : a);
-    return { pack: latest.master, row: latest.row, po: latest.po, date: latest.date, factory: latest.factory,
-             others: [...new Set(packed.map(x => x.master))].filter(v => v !== latest.master) };
+    return { pack: latest[field], row: latest.row, po: latest.po, date: latest.date, factory: latest.factory, field,
+             others: [...new Set(packed.map(x => x[field]))].filter(v => v !== latest[field]) };
   }
-  const masterSays = m => 'Master Sheet Live says ' + m.pack + ' (row ' + m.row + (m.po ? ', PO ' + m.po : '') + (m.date ? ', ordered ' + mdy(m.date) : '') + ')' +
-    (m.others.length ? '; other rows say ' + m.others.join(' / ') : '');
+  const masterSays = m => 'Master Sheet Live' + (m.field === 'inner' ? "'s Inner" : '') + ' says ' + m.pack + ' (row ' + m.row + (m.po ? ', PO ' + m.po : '') +
+    (m.date ? ', ordered ' + mdy(m.date) : '') + ')' + (m.others.length ? '; other rows say ' + m.others.join(' / ') : '');
 
   // The saved copy of Master Sheet Live that PO Recap keeps for everyone (who mustn't need access to the sheet itself):
-  // only what the case pack check needs. For each style, the latest row for each different pack it has (and one row
-  // when it has none), as [row, pack, factory PO, order date]: enough for masterPack to give the same answer as on the
-  // whole sheet. No prices, quantities or factories.
+  // only what the pack checks need. For each style, the latest row for each different pair of packs it has (carton and
+  // inner; one row when it has neither), as [row, carton pack, factory PO, order date, inner pack]: enough for
+  // masterPack to give the same answer as on the whole sheet, for either column. No prices, quantities or factories.
+  // COPY_V: the copy's format; a copy in an older one (version 1 had no inner packs) is read as no copy at all.
+  const COPY_V = 2;
   function compactMaster(master) {
     const styles = {};
     for (const [style, list] of master.styles) {
       const latest = new Map();
       for (const x of list) {
-        const k = x.master == null ? 'none' : x.master, have = latest.get(k);
+        const k = (x.master == null ? '-' : x.master) + '/' + (x.inner == null ? '-' : x.inner), have = latest.get(k);
         if (!have || x.date > have.date || (x.date === have.date && x.row > have.row)) latest.set(k, x);
       }
-      const keep = [...latest.values()].filter(x => x.master != null || latest.size === 1);
-      styles[style] = keep.map(x => [x.row, x.master, x.po, x.date]);
+      const keep = [...latest.values()].filter(x => x.master != null || x.inner != null || latest.size === 1);
+      styles[style] = keep.map(x => [x.row, x.master, x.po, x.date, x.inner == null ? null : x.inner]);
     }
-    return { v: 1, rows: master.rows, styles };
+    return { v: COPY_V, rows: master.rows, styles };
   }
   // the copy back into what masterPack reads; copyOnly marks a copy that couldn't be brought up to date just now
   function expandMaster(copy, copyOnly) {
     const styles = new Map();
     for (const [style, list] of Object.entries(copy.styles || {}))
-      styles.set(style, list.map(([row, pack, po, date]) => ({ row, master: pack, inner: null, po: po || '', date: date || '', factory: '' })));
+      styles.set(style, list.map(([row, pack, po, date, inner]) => ({ row, master: pack, inner: inner == null ? null : inner, po: po || '', date: date || '', factory: '' })));
     return { styles, rows: copy.rows || 0, copyOnly: !!copyOnly };
   }
-  // Each style's pack on the POs and distros against the master sheet's latest row
-  function packIssues(pos, master) {
+  // Each style's pack on the POs and distros against the master sheet's latest row, in the column field names
+  function packIssues(pos, master, field) {
     if (!master) return [];
+    field = field || 'master';
+    const word = field === 'inner' ? 'prepack' : 'case pack';
     const by = new Map();
     const add = (style, pack, where) => { const s = by.get(style) || new Map(); const l = s.get(pack) || []; if (!l.includes(where)) l.push(where); s.set(pack, l); by.set(style, s); };
     for (const p of pos) {
@@ -601,17 +817,17 @@
     }
     const out = [];
     for (const [style, packs] of [...by].sort((a, b) => byNo(a[0], b[0]))) {
-      const m = masterPack(master, style);
-      if (!m) {
+      if (!masterPack(master, style, field)) {
         out.push({ kind: 'pack', style, text: master.copyOnly
-          ? `${style} isn't on the saved copy of Master Sheet Live yet, so its case pack can't be checked. The copy updates when someone who can open Master Sheet Live opens this buy.`
-          : `${style} isn't on Master Sheet Live, so its case pack can't be checked.` });
+          ? `${style} isn't on the saved copy of Master Sheet Live yet, so its ${word} can't be checked. It's added when someone who keeps the copy up to date opens this buy.`
+          : `${style} isn't on Master Sheet Live, so its ${word} can't be checked.` });
         continue;
       }
-      if (m.pack == null) { out.push({ kind: 'pack', style, text: `${style} has no case pack (Master) on Master Sheet Live.` }); continue; }
+      const m = masterPack(master, style, field);
+      if (m.pack == null) { out.push({ kind: 'pack', style, text: field === 'inner' ? `${style} has no inner pack (Inner) on Master Sheet Live.` : `${style} has no case pack (Master) on Master Sheet Live.` }); continue; }
       const off = [...packs].filter(([pack]) => pack !== m.pack);
       if (off.length) out.push({ kind: 'pack', style, master: m.pack,
-        text: `${style}: case pack ${off.map(([pack, where]) => pack + ' on ' + where.sort(byNo).join(', ')).join('; ')}, but ${masterSays(m)}.` });
+        text: `${style}: ${word} ${off.map(([pack, where]) => pack + ' on ' + where.sort(byNo).join(', ')).join('; ')}, but ${masterSays(m)}.` });
     }
     return out;
   }
@@ -663,16 +879,16 @@
       if (seen.has(k)) seen.get(k).push(p); else seen.set(k, [p]);
     }
     for (const g of seen.values()) if (g.length > 1) {
-      out.push({ kind: 'twice', pos: g.map(p => p.po), text: `POs ${nos(g)} have the same lines, units, banner and ship window. Was one sent twice?` });
+      out.push({ kind: 'twice', pos: g.map(p => p.po), text: `POs ${nos(g)} have the same lines, units, ${labelOf(key).banner === 'DC' ? 'DC' : 'banner'} and ship window. Was one sent twice?` });
     }
-    if (c.fobLA) {
+    if (c.fobOK) {
       const off = new Map();
-      for (const p of pos) if (!fobIsLA(p.fob)) { const k = fobLabel(p.fob); off.set(k, (off.get(k) || []).concat(p)); }
+      for (const p of pos) if (!c.fobOK(p.fob)) { const k = fobLabel(p.fob); off.set(k, (off.get(k) || []).concat(p)); }
       for (const [label, g] of [...off].sort((a, b) => a[0].localeCompare(b[0])))
-        out.push({ kind: 'fob', pos: g.map(p => p.po), text: `FOB point is ${label}, not LA, on ${g.length === pos.length && g.length > 2 ? 'every PO (' + g.length + ')' : g.length > 6 ? g.length + ' POs: ' + g.map(p => p.po).sort(byNo).join(', ') : nos(g)}.` });
+        out.push({ kind: 'fob', pos: g.map(p => p.po), text: `FOB point is ${label}, not ${c.fobRule}, on ${g.length === pos.length && g.length > 2 ? 'every PO (' + g.length + ')' : g.length > 6 ? g.length + ' POs: ' + g.map(p => p.po).sort(byNo).join(', ') : nos(g)}.` });
     }
     for (const p of pos.slice().sort((a, b) => byNo(a.po, b.po))) out.push(...distroIssues(p));
-    out.push(...packIssues(pos, master));
+    out.push(...packIssues(pos, master, c.packField));
     return out;
   }
 
@@ -735,8 +951,9 @@
   function recap(buy) {
     const c = customer(buy.customer) || { banners: [] };
     const bannerAt = b => { const i = c.banners.indexOf(b); return i < 0 ? 99 : i; };
-    const pos = buy.pos.slice().sort((a, b) => (a.startShip || '').localeCompare(b.startShip || '') || (a.cancel || '').localeCompare(b.cancel || '')
-      || bannerAt(a.banner) - bannerAt(b.banner) || String(a.banner).localeCompare(String(b.banner)) || byNo(a.po, b.po));
+    const pos = buy.pos.map(p => typeof p.banner === 'string' ? p : Object.assign({}, p, { banner: String(p.banner || '') }))
+      .sort((a, b) => (a.startShip || '').localeCompare(b.startShip || '') || (a.cancel || '').localeCompare(b.cancel || '')
+      || bannerAt(a.banner) - bannerAt(b.banner) || a.banner.localeCompare(b.banner) || byNo(a.po, b.po));
     const windows = [];
     for (const p of pos) {
       const key = p.startShip + '|' + p.cancel;
@@ -850,14 +1067,14 @@
 
   // A style's pack on the POs, and whether it needs a look: packs that differ between POs, or (with Master Sheet Live
   // read) a pack the master sheet doesn't give. text is what the export cell says.
-  function packCell(row, master) {
-    const m = master ? masterPack(master, row.style) : null;
+  function packCell(row, master, field) {
+    const m = master ? masterPack(master, row.style, field) : null, col = field === 'inner' ? 'inner' : 'master';
     const off = !!master && (!m || m.pack == null || row.packs.some(p => p !== m.pack));
     const bad = row.packs.length > 1 || off;
     let text = row.packs.join(' / ');
     if (master && !m) text += master.copyOnly ? ' (not on the saved copy yet)' : ' (not on master)';
-    else if (master && m.pack == null) text += ' (no master pack)';
-    else if (off) text += ' (master ' + m.pack + ')';
+    else if (master && m.pack == null) text += ' (no ' + col + ' pack)';
+    else if (off) text += ' (' + col + ' ' + m.pack + ')';
     return { bad, value: !bad && row.packs.length === 1 ? row.packs[0] : text, master: m };
   }
 
@@ -866,7 +1083,7 @@
     opts = opts || {};
     // a copy for each sheet: xlsx-js-style rewrites the style objects it writes (colours gain an FF alpha)
     const ST = JSON.parse(JSON.stringify(STYLES));
-    const R = recap(buy), notes = buy.notes || {};
+    const R = recap(buy), notes = buy.notes || {}, cu = customer(buy.customer) || {}, L = labelOf(buy.customer);
     fl = fl || flags(buy.customer, buy.pos, master);
     const { put, merge, finish } = sheetWriter();
 
@@ -887,10 +1104,10 @@
       ['Units', S.units, ST.plainUnits],
       ['Cost', S.ext, ST.plainMoney],
       ['Ordered', S.orderFrom === S.orderTo ? mdy(S.orderFrom) : mdy(S.orderFrom) + ' – ' + mdy(S.orderTo)],
-      ['Buyer', S.buyers.join(', ')],
-      ['Dept', S.depts.join(', ')],
-    ];
-    if (opts.packNote) facts.push(['Case packs', opts.packNote, opts.packChecked ? ST.value : ST.flagged]);
+    ].concat(cu.buyer === false && !S.buyers.length ? [] : [['Buyer', S.buyers.join(', ')]], [['Dept', S.depts.join(', ')]]);
+    const versions = [...new Set(R.pos.map(p => p.version).filter(Boolean))].sort((a, b) => a - b);
+    if (versions.length) facts.push(['PO version', versions.join(', ')]);
+    if (opts.packNote) facts.push([L.packs, opts.packNote, opts.packChecked ? ST.value : ST.flagged]);
     let r = 2;
     for (const [k, v, s] of facts) { put(r, C.style, k, ST.label); put(r, C.desc, v, s || ST.value); r++; }
     r++;
@@ -903,12 +1120,12 @@
       r++;
     };
     mini('Ship window', R.byWindow, 'label');
-    mini('Banner', R.byBanner, 'banner');
+    mini(L.banner, R.byBanner, 'banner');
     r++;
 
     // the recap: three heading rows (ship window, banner, PO #)
     const h0 = r;
-    for (const [c, t] of [[C.check, 'Check'], [C.style, 'Style'], [C.desc, 'Description'], [C.cost, 'Cost'], [C.pack, 'Pack'], [C.total, 'Total units'], [C.ext, 'Ext cost'], [C.notes, 'Notes']]) {
+    for (const [c, t] of [[C.check, 'Check'], [C.style, 'Style'], [C.desc, 'Description'], [C.cost, 'Cost'], [C.pack, L.pack], [C.total, 'Total units'], [C.ext, 'Ext cost'], [C.notes, 'Notes']]) {
       put(h0, c, t, ST.head); put(h0 + 1, c, '', ST.head); put(h0 + 2, c, '', ST.head); merge(h0, c, h0 + 2, c);
     }
     let c = C.po0;
@@ -931,7 +1148,7 @@
       const odd = row.varies.cost || row.varies.desc;
       put(r, C.desc, row.desc, row.varies.desc ? ST.flagged : ST.wrap);
       put(r, C.cost, row.cost != null ? row.cost : row.costs.map(x => x.toFixed(2)).join(' / '), row.cost != null ? ST.money : ST.flagged);
-      const pk = packCell(row, master);
+      const pk = packCell(row, master, cu.packField);
       put(r, C.pack, pk.value, pk.bad ? ST.flagged : ST.units);
       cols.forEach((po, i) => {
         const cell = row.cells[po];
@@ -1041,8 +1258,8 @@
     return s;
   }
 
-  return { CUSTOMERS, TONES, customer, read, readSheet, readMarmaxx, readMarmaxxDistro, readDistroSheet, isDistroPages, rows, checkBatch,
-           flags, distroIssues, parseMaster, masterPack, masterSays, compactMaster, expandMaster, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig,
+  return { CUSTOMERS, TONES, COPY_V, customer, labelOf, read, readSheet, readMarmaxx, readMarmaxxDistro, readDistroSheet, readBurlington, posOf, isDistroPages, rows, checkBatch,
+           flags, distroIssues, parseMaster, masterPack, masterSays, compactMaster, expandMaster, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig, dmy,
            recap, cellText, cellTip, variantsTip, worksheet, distroSheet, sheetName, defaultName,
            int, num, iso, md, mdy, fmt, money, words, colName };
 });

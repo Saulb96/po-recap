@@ -173,4 +173,94 @@ function marmaxxDistroTJ(o) {
   return [{ n: 1, items, images: [] }];
 }
 
-module.exports = { marmaxxPO, marmaxxDistro, marmaxxDistroTJ, MAR_DCS, TJ_DCS, LAYOUT };
+// A made-up Burlington release, laid out where Burlington's portal prints each field (y up from the bottom of a 612 x 792
+// page): the approval sheet, a terms page, the details sheet with the destination DC, the prepack blocks (two to a
+// page, under each page's vendor heading), and the packing instructions. o: { pos: [{ po, lines: [{ style, desc, color,
+// cost, per, qty, sizes: [{ size, qty }], prepack }] }], version, order, start, cancel (DD-MON-YY), dept, fob, dc,
+// cover (the PO numbers page 1 lists, if not every PO's), relUnits, relCost (what page 1 says, if not the sum),
+// versions: { page n: its own version }, noVersion, badSum (a block whose summing-up line is a cent out) }
+const BDC = { name: 'ZZ Sample (SMP) DC', street: '1 SAMPLE WAY', city: 'SAMPLETOWN', state: 'CA', zip: '90000' };
+const usd = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function burlingtonPO(o) {
+  const dc = o.dc || BDC, dept = o.dept || 'Accsry', order = o.order || '27-OCT-26', start = o.start || '06-JAN-27', cancel = o.cancel || '12-JAN-27';
+  const fob = o.fob || 'DESTINATION', vendor = '500000000';
+  const blocks = o.pos.flatMap(p => p.lines.map(l => Object.assign({ po: p.po }, l)));
+  const cents = b => Math.round(b.per * b.cost * 100);
+  const units = o.relUnits != null ? o.relUnits : blocks.reduce((t, b) => t + b.qty * b.per, 0);
+  const cost = o.relCost != null ? o.relCost : blocks.reduce((t, b) => t + b.qty * cents(b), 0) / 100;
+  const cover = o.cover || o.pos.map(p => p.po);
+  const pages = [];
+  const page = items => { pages.push({ n: pages.length + 1, items, images: [] }); return items; };
+  // page 1, the approval sheet
+  page([
+    it('Bill To', 91, 741), it('Vendor:', 289, 741), it(vendor, 334, 741), it('EDI', 500, 741),
+    it('Burlington Merchandising Corp.', 25, 722), it('A-METRO1 SOLUTIONS LLC', 270, 722),
+    it('1 SAMPLE ROAD', 25, 710), it('1 SAMPLE STREET', 270, 710),
+    it('Order Date', 41, 657), it('Start Ship Date', 147, 657), it('Ship Cancel Date', 282, 657), it('Department', 461, 657),
+    it(order, 34, 638), it(start, 154, 638), it(cancel, 280, 638), it(dept, 478, 638),
+    it('THIS SHEET COVERS APPROVAL FOR THE FOLLOWING PURCHASE ORDER(s):', 22, 608),
+    ...cover.map((n, i) => it(n, 30 + 73 * i, 585)),
+    it('Release:', 64, 559), it('A', 113, 559),
+    it('Total Rel Units:', 25, 537), it(units.toLocaleString('en-US'), 172, 537),
+    it('Total Rel Cost:', 25, 519), it(usd(cost), 151, 519),
+    it('Release Terms:', 24, 499), it('NET 10EOM +30 days', 26, 482), it('Freight Collect', 26, 469),
+    it('F.O.B:', 27, 454), it(fob, 64, 454),
+    it('This order is not valid unless signed by Purchasers Buyer. Total Rel Units are the units of the whole release.', 29, 432),
+  ]);
+  // a terms page: text that mentions purchase orders, prepacks and totals in sentences
+  page([it('PURCHASE ORDER TERMS AND CONDITIONS', 22, 734), it('1. TERMS. All Purchase Order: terms apply to every release.', 22, 720),
+        it('Prepack contents must match the order.', 23, 713)]);
+  // the details sheet
+  page([
+    it('Bill To', 98, 732), it('Vendor: ' + vendor, 292, 732), it('EDI', 510, 732),
+    it('Order Date', 42, 647), it('Department', 164, 647), it('Destination', 369, 643),
+    it(order, 41, 626), it(dept, 174, 626), it(dc.name, 270, 626),
+    it(dc.street, 268, 610),
+    it('Start Ship Date', 31, 594), it('Ship Cancel Date', 153, 594), it(dc.city, 269, 594), it(dc.state, 410, 594), it(dc.zip, 459, 594),
+    it(start, 37, 574), it(cancel, 157, 574),
+    it('Ticketing Instructions:', 30, 542), it('must preticket', 148, 542),
+    it('THIS SHEET COVERS DETAILS FOR THE FOLLOWING PURCHASE ORDER(s):', 27, 507),
+    ...cover.map((n, i) => it(n, 31 + 73 * i, 490)),
+    it('Terms', 237, 458), it('Payment:', 29, 435), it('NET 10EOM +30 days', 83, 435),
+    it('Freight Terms:', 29, 396), it('Freight Collect', 120, 396), it('F.O.B:', 293, 396), it(fob, 329, 396),
+    it('Total Rel Units:', 27, 297), it(units.toLocaleString('en-US'), 204, 297),
+    it('Total Rel Cost:', 26, 277), it(usd(cost), 183, 277),
+  ]);
+  // the prepack blocks, two to a page
+  const head = () => [it('Vendor #', 64, 731), it('Vendor Name', 223, 731), it('Order Date', 382, 731), it('Department', 474, 731),
+                      it(vendor, 60, 712), it('A-METRO1 SOLUTIONS LLC', 177, 712), it(order, 377, 712), it(dept, 489, 712)];
+  let items = null;
+  blocks.forEach((b, i) => {
+    if (i % 2 === 0) items = page(head());
+    const y0 = i % 2 === 0 ? 664 : 396, sizes = b.sizes || [{ size: 'QTY', qty: b.per }], name = b.prepack || b.style + ' ' + b.color + ' 1' + (6 + i);
+    const ext = cents(b) / 100, low = (sizes.length - 1) * 13;
+    items.push(
+      it('Purchase Order:', 26, y0), it(b.po.slice(0, -2), 131, y0), it(b.po.slice(-2), 181, y0),
+      it('PREPACK:', 28, y0 - 14), it(name, 90, y0 - 14), it('Quantity:', 223, y0 - 14), it(b.qty, 273, y0 - 14), it('prepack(s)', 301, y0 - 14),
+      it('Type:', 373, y0 - 14), it('INNERPACK', 405, y0 - 14),
+      it('Ship Type:', 43, y0 - 31), it('Flat', 104, y0 - 31),
+      it('Style:', 41, y0 - 54), it(b.style, 73, y0 - 54), it('Desc:', 122, y0 - 54), it(b.desc, 154, y0 - 54),
+      it('Color:', 40, y0 - 67), it(b.color, 73, y0 - 67), it('Cost:', 441, y0 - 67), it(b.cost.toFixed(2), 472, y0 - 67),
+      it('Size', 40, y0 - 85), it('Quantity', 139, y0 - 85),
+      ...sizes.flatMap((z, k) => [it(z.size, 37, y0 - 98 - 13 * k), it(z.qty, 174, y0 - 98 - 13 * k)]),
+      it('Units:', 39, y0 - 120 - low), it(b.per, 76, y0 - 120 - low), it('Ext cost:', 125, y0 - 120 - low), it(usd(ext), 177, y0 - 120 - low),
+      it('Packing Instructions:', 30, y0 - 147 - low), it('Prepack - solid pre-pack', 176, y0 - 147 - low),
+      it('Prepack', 30, y0 - 189 - low), it(name, 80, y0 - 189 - low), it('contains', 210, y0 - 189 - low), it(b.per, 261, y0 - 189 - low),
+      it('units at total ext cost of', 277, y0 - 189 - low), it(usd(ext), 404, y0 - 189 - low),
+      it(b.qty, 33, y0 - 203 - low), it('prepack(s), at cost of', 63, y0 - 203 - low), it(usd(ext), 189, y0 - 203 - low), it('=', 234, y0 - 203 - low),
+      it(usd(o.badSum ? ext * b.qty + 0.01 : ext * b.qty), 255, y0 - 203 - low),
+      it(b.qty, 31, y0 - 219 - low), it('prepack(s),', 66, y0 - 219 - low), it(b.per, 134, y0 - 219 - low), it('units per prepack =', 149, y0 - 219 - low),
+      it(b.qty * b.per, 254, y0 - 219 - low), it('units', 289, y0 - 219 - low));
+  });
+  // the packing instructions
+  page([...head(), it('Packing and Routing Instructions', 24, 683), it('(Pre-pack by Style -- to be shipped to Dist. Center)', 197, 683),
+        it('1. Prepare one Invoice per Shipment.', 30, 570), it('A. List the Total Quantity for each Style, Color and Size.', 38, 559)]);
+  for (const pg of pages) {
+    pg.items.push(it('Page ' + pg.n, 488, 764), it('of ' + pages.length, 536, 764));
+    const v = o.versions && o.versions[pg.n] != null ? o.versions[pg.n] : o.version;
+    if (!o.noVersion) pg.items.push(it('po version:', 21, 33), it(v, 70, 33), it('v.', 535, 33), it('1.9', 550, 33));
+  }
+  return pages;
+}
+
+module.exports = { marmaxxPO, marmaxxDistro, marmaxxDistroTJ, burlingtonPO, MAR_DCS, TJ_DCS, LAYOUT, BDC };

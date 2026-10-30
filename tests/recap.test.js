@@ -82,7 +82,7 @@ test('refused: pages for two different POs, a file that is not a TJX PO, an empt
   assert.equal(read({ headPo: { 3: '900199' } }).error, 'Page 3 is for PO 900199 (reference D000000001), but page 2 is for PO 900101 (reference D000000001).');
   assert.match(Recap.read('marmaxx', [{ n: 1, items: [{ s: 'BURLINGTON STORES INC', x: 10, y: 500, w: 90 }], images: [] }]).error, /isn't a Marmaxx PO/);
   assert.equal(Recap.read('marmaxx', []).error, 'The file has no pages.');
-  assert.match(Recap.read('burlington', marmaxxPO(po())).error, /no reader for Burlington yet/);
+  assert.match(Recap.read('burlington', marmaxxPO(po())).error, /isn't a Burlington PO/);
 });
 
 test('refused: a line whose units are missing names the line', () => {

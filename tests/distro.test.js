@@ -232,10 +232,11 @@ const MASTER = [
 test('Master Sheet Live: each style\'s latest row with a pack (newest Order Date, else the lowest), other packs kept', () => {
   const m = Recap.parseMaster(MASTER);
   assert.equal(m.rows, 6);
-  assert.deepEqual(Recap.masterPack(m, 'ZZ10001'), { pack: 48, row: 3, po: '102000', date: '2026-06-27', factory: 'F', others: [24] });
+  assert.deepEqual(Recap.masterPack(m, 'ZZ10001'), { pack: 48, row: 3, po: '102000', date: '2026-06-27', factory: 'F', field: 'master', others: [24] });
   assert.equal(Recap.masterPack(m, 'ZZ10002').pack, 24);
   assert.equal(Recap.masterPack(m, 'ZZ10002').row, 6);
-  assert.deepEqual(Recap.masterPack(m, 'ZZ10003'), { pack: null, rows: 1 });
+  assert.deepEqual(Recap.masterPack(m, 'ZZ10003'), { pack: null, rows: 1, field: 'master' });
+  assert.deepEqual([Recap.masterPack(m, 'ZZ10001', 'inner').pack, Recap.masterPack(m, 'ZZ10001', 'inner').row], [12, 3], 'the inner pack: the same latest row');
   assert.equal(Recap.masterPack(m, 'ZZ19999'), null);
   assert.equal(Recap.parseMaster([['Style', 'Pack']]), null);
   assert.equal(Recap.excelDate(46000), '2025-12-09');
@@ -261,20 +262,21 @@ test('Master Sheet Live\'s PO blocks: the rows under a PO share its order date, 
 test('the saved copy of Master Sheet Live gives the same case packs, with no prices or factories in it', () => {
   const m = Recap.parseMaster(MASTER);
   const copy = JSON.parse(JSON.stringify(Recap.compactMaster(m)));
-  assert.deepEqual(copy.styles.ZZ10001, [[2, 24, '101000', '2025-12-09'], [3, 48, '102000', '2026-06-27']], 'the latest row for each pack; the row with no pack is dropped');
-  assert.deepEqual(copy.styles.ZZ10003, [[7, null, '102001', '2026-10-05']], 'a style with no pack keeps one row');
+  assert.deepEqual(copy.styles.ZZ10001, [[2, 24, '101000', '2025-12-09', 12], [3, 48, '102000', '2026-06-27', 12]], 'the latest row for each pair of packs; the row with neither is dropped');
+  assert.deepEqual(copy.styles.ZZ10003, [[7, null, '102001', '2026-10-05', null]], 'a style with no pack keeps one row');
   assert.ok(!JSON.stringify(copy).includes('"F"'), 'no factory names');
   const back = Recap.expandMaster(copy);
-  for (const s of ['ZZ10001', 'ZZ10002', 'ZZ10003', 'ZZ19999']) {
-    const a = Recap.masterPack(m, s), b = Recap.masterPack(back, s);
-    assert.deepEqual(b && (b.pack == null ? null : [b.pack, b.row, b.po, b.date, b.others]), a && (a.pack == null ? null : [a.pack, a.row, a.po, a.date, a.others]), s);
+  assert.equal(copy.v, Recap.COPY_V);
+  for (const field of ['master', 'inner']) for (const s of ['ZZ10001', 'ZZ10002', 'ZZ10003', 'ZZ19999']) {
+    const a = Recap.masterPack(m, s, field), b = Recap.masterPack(back, s, field);
+    assert.deepEqual(b && (b.pack == null ? null : [b.pack, b.row, b.po, b.date, b.others]), a && (a.pack == null ? null : [a.pack, a.row, a.po, a.date, a.others]), s + ' ' + field);
   }
 });
 
 test('a style missing from a copy that couldn\'t be updated says so, not that it isn\'t on Master Sheet Live', () => {
   const copy = Recap.expandMaster(Recap.compactMaster(Recap.parseMaster(MASTER)), true);
   const p = po({ lines: [{ ...LINES[0], style: 'ZZ19999' }] }).po;
-  assert.match(Recap.packIssues([p], copy)[0].text, /^ZZ19999 isn't on the saved copy of Master Sheet Live yet, .* updates when someone who can open Master Sheet Live opens this buy\.$/);
+  assert.match(Recap.packIssues([p], copy)[0].text, /^ZZ19999 isn't on the saved copy of Master Sheet Live yet, .* It's added when someone who keeps the copy up to date opens this buy\.$/);
   assert.match(Recap.packIssues([p], Recap.expandMaster(Recap.compactMaster(Recap.parseMaster(MASTER)), false))[0].text, /^ZZ19999 isn't on Master Sheet Live,/);
 });
 
