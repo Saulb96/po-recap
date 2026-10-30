@@ -190,10 +190,13 @@
   }
 
   /* ============================== Marmaxx distribution instructions ============================== */
-  // TJX's "Routing and Distribution Instructions" for one PO, as a PDF: the PO number and version on top, the order /
-  // start ship / cancel dates under their labels, one block per distribution center (PO # 01 900101, DC #: 881), then
-  // one line per style with its vendor pack size, total units and the units for each DC. Marshalls DCs carry PO prefixes
-  // 01-08, TJ Maxx 10-80 (the PO's own terms page says so), which tells the banner.
+  // TJX's "Routing and Distribution Instructions" for one PO, as a PDF. The Marshalls and TJ Maxx layouts set the same
+  // things differently ("PG-LN" or "PG/ LN", "Vendor Style" on one line or two, "DC# 881" as one piece or two, lines 1-1
+  // or 1/1, and the TJ Maxx description wraps above and below its line), so columns are found by what their headings
+  // say or have under them. On top: the PO number and version; the order / start ship / cancel dates, the first row of
+  // three dates under their labels; one block per distribution center ("PO # 01 900101" or "PO #: 10 900101", with
+  // "DC #: 881" under it). Then one line per style with its vendor pack size, total units and the units for each DC.
+  // Marshalls DCs carry PO prefixes 01-08, TJ Maxx 10-80 (the PO's own terms page says so), which tells the banner.
   const bannerOfPrefixes = prefixes => {
     if (!prefixes.length) return null;
     if (prefixes.every(p => /^0[1-8]$/.test(p))) return 'Marshalls';
@@ -203,6 +206,37 @@
   // the title on its own (every PO also says "...WITHOUT ROUTING AND DISTRIBUTION INSTRUCTIONS" in a sentence), with
   // the "PO Number:" line a distro carries and a PO doesn't
   const isDistroPages = pages => pages.some(p => p.items.some(i => /^ROUTING AND DISTRIBUTION INSTRUCTIONS$/i.test(i.s)) && p.items.some(i => /^PO Number:/.test(i.s)));
+
+  const LINE_NO = /^\d+[-/]\d+$/;
+
+  // A page's line table: its columns, found by what each heading says or has under it, so either layout reads.
+  // { style, tjx, desc, pack, total, dcs: [{ dc, x }], top } or null when the page has no table.
+  function distroColumns(page) {
+    // the table's "Total" heading: "Units" under it, and the line-number heading ("PG-LN", or "PG/" over "N") in its
+    // band. Other "Total" text on the page (a revision's notes, say) isn't the table; a page without one has no table.
+    const bandOf = t => page.items.filter(i => i.y <= t.y + 6 && i.y >= t.y - 22);
+    const total = page.items.find(t => t.s === 'Total' &&
+      page.items.some(u => u.s === 'Units' && u.y < t.y && u.y >= t.y - 12 && Math.abs(u.x - t.x) < 10) && bandOf(t).some(i => /^PG[-/]/.test(i.s)));
+    if (!total) return null;
+    const band = bandOf(total);
+    const under = (h, re) => band.some(i => i !== h && i.y < h.y && i.y >= h.y - 12 && Math.abs(i.x - h.x) < 10 && re.test(i.s));
+    const dcs = [];
+    for (const i of band) {
+      const m = /^DC#\s*(\d+)$/.exec(i.s);
+      if (m) { dcs.push({ dc: m[1], x: center(i) }); continue; }
+      if (i.s !== 'DC#') continue;
+      // TJ Maxx sets "DC#" and its number apart: the column is the two together
+      const n = band.find(j => Math.abs(j.y - i.y) < 2 && j.x > i.x && j.x - (i.x + (i.w || 0)) < 14 && /^\d+$/.test(j.s));
+      if (n) dcs.push({ dc: n.s, x: (i.x + n.x + (n.w || 0)) / 2 });
+    }
+    return {
+      style: band.find(i => /^Vendor Style/.test(i.s)) || band.find(i => i.s === 'Vendor' && under(i, /^Style/)),
+      tjx: band.find(i => /^TJX Style/.test(i.s)) || band.find(i => i.s === 'TJX' && under(i, /^Style/)),
+      pack: band.find(i => i.s === 'Vendor' && under(i, /^Pack/)),
+      desc: band.find(i => i.s === 'Description'),
+      total, dcs, top: Math.min(...band.map(i => i.y)),
+    };
+  }
 
   function readMarmaxxDistro(pages, fileName) {
     const fail = (why, po) => ({ error: why, poNo: po || '', distroFile: true });
@@ -216,13 +250,14 @@
           if (po && m[1] !== po) return fail(`Page ${page.n} is for PO ${m[1]}, but the distro started with PO ${po}.`, po);
           po = m[1];
           const v = /Version:\s*(\d+)/.exec(r.text); if (v) version = +v[1];
-          const vd = /Version Date:\s*(\d{1,2}\/\d{1,2}\/\d{4})/.exec(r.text); if (vd) versionDate = iso(vd[1]);
+          const vd = /Version\s+Date:\s*(\d{1,2}\/\d{1,2}\/\d{4})/.exec(r.text); if (vd) versionDate = iso(vd[1]);
         }
       }
-      // the dates: the first row under the "Order Date" labels with three dates, read left to right
-      const labels = rs.find(r => r.items.some(i => i.s === 'Order Date') && r.items.some(i => /^Start Ship/.test(i.s)));
+      // the dates: the first row of three dates within 30 pt under the labels row ("Order Date" or "Order" over "Date"),
+      // read left to right
+      const labels = rs.find(r => r.items.some(i => /^Order( Date)?$/.test(i.s)) && r.items.some(i => /^Start Ship/.test(i.s)));
       if (labels && !dates) {
-        const vals = rs.find(r => r.y < labels.y && r.items.filter(i => iso(i.s)).length >= 3);
+        const vals = rs.find(r => r.y < labels.y && r.y > labels.y - 30 && r.items.filter(i => iso(i.s)).length >= 3);
         if (vals) {
           const ds = vals.items.filter(i => iso(i.s));
           dates = { order: iso(ds[0].s), start: iso(ds[1].s), cancel: iso(ds[2].s) };
@@ -231,46 +266,51 @@
           if (dv) dept = dv.s;
         }
       }
-      // the DC blocks: "PO # 01 900101", with "AZR: MAR PHOENIX" and "DC #: 881" under each
+      // the DC blocks: "PO # 01 900101" (or "PO #: 10 900101"), with "AZR: MAR PHOENIX" and "DC #: 881" under each; a
+      // name that runs on ("SAN: TJM SAN" "ANTONIO") is joined
       for (const it of page.items) {
-        const b = /^PO # (\d{2}) (\d+)$/.exec(it.s);
+        const b = /^PO #:?\s*(\d{2})\s+(\d+)$/.exec(it.s);
         if (!b) continue;
         if (po && b[2] !== po) return fail(`The DC block for prefix ${b[1]} is for PO ${b[2]}, not ${po}.`, po);
         const col = page.items.filter(i => Math.abs(i.x - it.x) < 6 && i.y < it.y && i.y > it.y - 50);
         const dcNo = col.map(i => /^DC #:\s*(\d+)$/.exec(i.s)).find(Boolean);
-        const name = col.map(i => /^([A-Z]{3}):\s*(.+)$/.exec(i.s)).find(Boolean);
+        const nameItem = col.find(i => /^[A-Z]{3}:\s*\S/.test(i.s));
         if (!dcNo) return fail(`The DC number for prefix ${b[1]} couldn't be read.`, po);
-        dcs.set(dcNo[1], { dc: dcNo[1], prefix: b[1], code: name ? name[1] : '', name: name ? name[2] : '' });
+        // the pieces to its right on the same row, up to the next DC's name
+        const pieces = nameItem ? page.items.filter(i => Math.abs(i.y - nameItem.y) < 2 && i.x > nameItem.x && i.x < nameItem.x + 140).sort((a, c) => a.x - c.x) : [];
+        const stop = pieces.findIndex(i => /^[A-Z]{3}:/.test(i.s));
+        const full = nameItem ? [nameItem].concat(stop < 0 ? pieces : pieces.slice(0, stop)).map(i => i.s).join(' ') : '';
+        const nm = /^([A-Z]{3}):\s*(.+)$/.exec(full);
+        dcs.set(dcNo[1], { dc: dcNo[1], prefix: b[1], code: nm ? nm[1] : '', name: nm ? nm[2] : '' });
       }
-      // the line table: headings in a band, the DC columns named by "DC# 881" under each code
-      const head = headings(page, rs, 'PG-LN');
-      if (head) {
-        const get = s => page.items.find(i => i.s === s && i.y >= head.y - 2 && i.y <= head.y + 20) || null;
-        const col = { style: get('Vendor Style'), tjx: get('TJX Style #'), desc: get('Description'), pack: get('Vendor'), total: get('Total') };
-        if (!col.style || !col.pack || !col.total) return fail(`Page ${page.n}'s distribution headings aren't the ones this reader knows.`, po);
-        const dcCols = page.items.filter(i => /^DC# \d+$/.test(i.s) && i.y >= head.y - 2 && i.y <= head.y + 20)
-          .map(i => ({ dc: i.s.replace('DC# ', ''), x: center(i) }));
-        if (!dcCols.length) return fail(`Page ${page.n}'s DC columns couldn't be read.`, po);
-        for (const r of rs) {
-          const lnItem = r.items[0];
-          if (r.y >= head.y || !/^\d+-\d+$/.test(lnItem.s)) continue;
-          const rest = r.items.slice(1);
-          const style = nearest(rest, center(col.style), 30, i => STYLE.test(i.s));
-          const tjx = col.tjx && nearest(rest, center(col.tjx), 25, i => /^\d+$/.test(i.s));
-          const pack = nearest(rest, center(col.pack), 18, i => int(i.s) != null);
-          const total = nearest(rest, center(col.total), 18, i => int(i.s) != null);
-          const gone = [!style && 'vendor style', !pack && 'vendor pack', !total && 'total units'].filter(Boolean);
-          if (gone.length) return fail(`Line ${lnItem.s} couldn't be read: no ${words(gone)} where the headings put them.`, po);
-          const units = {};
-          for (const c of dcCols) {
-            const u = nearest(rest, c.x, 16, i => int(i.s) != null && i !== total && i !== pack);
-            if (u) units[c.dc] = int(u.s);
-          }
-          let desc = rest.filter(i => i.x > (tjx || style).x && i.x < pack.x && i !== tjx).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim();
-          const c = /^(\d{1,3})\s+(.+)$/.exec(desc);
-          if (c) desc = c[2];
-          lines.push({ ln: lnItem.s, style: style.s.toUpperCase(), tjxStyle: tjx ? tjx.s : '', desc, pack: int(pack.s), total: int(total.s), units });
+      // the line table
+      const col = distroColumns(page);
+      if (!col) continue;
+      if (!col.style || !col.pack || !col.total) return fail(`Page ${page.n}'s distribution headings aren't the ones this reader knows.`, po);
+      if (!col.dcs.length) return fail(`Page ${page.n}'s DC columns couldn't be read.`, po);
+      for (const r of rs) {
+        const lnItem = r.items[0];
+        if (r.y >= col.top || !LINE_NO.test(lnItem.s)) continue;
+        const rest = r.items.slice(1);
+        const style = nearest(rest, center(col.style), 30, i => STYLE.test(i.s));
+        const tjx = col.tjx && nearest(rest, center(col.tjx), 25, i => /^\d+$/.test(i.s));
+        const pack = nearest(rest, center(col.pack), 18, i => int(i.s) != null);
+        const total = nearest(rest, center(col.total), 18, i => int(i.s) != null);
+        const gone = [!style && 'vendor style', !pack && 'vendor pack', !total && 'total units'].filter(Boolean);
+        if (gone.length) return fail(`Line ${lnItem.s} couldn't be read: no ${words(gone)} where the headings put them.`, po);
+        const units = {};
+        for (const c of col.dcs) {
+          const u = nearest(rest, c.x, 18, i => int(i.s) != null && i !== total && i !== pack);
+          if (u) units[c.dc] = int(u.s);
         }
+        // the description: in its column, on the line's own row or wrapped just above and below it (the next line is
+        // 17 pt away)
+        const from = col.desc ? col.desc.x - 4 : (tjx || style).x + 1;
+        let desc = page.items.filter(i => Math.abs(i.y - r.y) <= 7 && i.x >= from && i.x < pack.x - 2 && i !== style && i !== tjx && i !== pack)
+          .sort((a, b) => b.y - a.y || a.x - b.x).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim();
+        const c = /^(\d{1,3})\s+(.+)$/.exec(desc);
+        if (c) desc = c[2];
+        lines.push({ ln: lnItem.s, style: style.s.toUpperCase(), tjxStyle: tjx ? tjx.s : '', desc, pack: int(pack.s), total: int(total.s), units });
       }
     }
     return finishDistro({ po, version, versionDate, dates, dept, dcs: [...dcs.values()], lines, fileName }, fail);
@@ -525,6 +565,31 @@
   }
   const masterSays = m => 'Master Sheet Live says ' + m.pack + ' (row ' + m.row + (m.po ? ', PO ' + m.po : '') + (m.date ? ', ordered ' + mdy(m.date) : '') + ')' +
     (m.others.length ? '; other rows say ' + m.others.join(' / ') : '');
+
+  // The saved copy of Master Sheet Live that PO Recap keeps for everyone (who mustn't need access to the sheet itself):
+  // only what the case pack check needs. For each style, the latest row for each different pack it has (and one row
+  // when it has none), as [row, pack, factory PO, order date]: enough for masterPack to give the same answer as on the
+  // whole sheet. No prices, quantities or factories.
+  function compactMaster(master) {
+    const styles = {};
+    for (const [style, list] of master.styles) {
+      const latest = new Map();
+      for (const x of list) {
+        const k = x.master == null ? 'none' : x.master, have = latest.get(k);
+        if (!have || x.date > have.date || (x.date === have.date && x.row > have.row)) latest.set(k, x);
+      }
+      const keep = [...latest.values()].filter(x => x.master != null || latest.size === 1);
+      styles[style] = keep.map(x => [x.row, x.master, x.po, x.date]);
+    }
+    return { v: 1, rows: master.rows, styles };
+  }
+  // the copy back into what masterPack reads; copyOnly marks a copy that couldn't be brought up to date just now
+  function expandMaster(copy, copyOnly) {
+    const styles = new Map();
+    for (const [style, list] of Object.entries(copy.styles || {}))
+      styles.set(style, list.map(([row, pack, po, date]) => ({ row, master: pack, inner: null, po: po || '', date: date || '', factory: '' })));
+    return { styles, rows: copy.rows || 0, copyOnly: !!copyOnly };
+  }
   // Each style's pack on the POs and distros against the master sheet's latest row
   function packIssues(pos, master) {
     if (!master) return [];
@@ -537,7 +602,12 @@
     const out = [];
     for (const [style, packs] of [...by].sort((a, b) => byNo(a[0], b[0]))) {
       const m = masterPack(master, style);
-      if (!m) { out.push({ kind: 'pack', style, text: `${style} isn't on Master Sheet Live, so its case pack can't be checked.` }); continue; }
+      if (!m) {
+        out.push({ kind: 'pack', style, text: master.copyOnly
+          ? `${style} isn't on the saved copy of Master Sheet Live yet, so its case pack can't be checked. The copy updates when someone who can open Master Sheet Live opens this buy.`
+          : `${style} isn't on Master Sheet Live, so its case pack can't be checked.` });
+        continue;
+      }
       if (m.pack == null) { out.push({ kind: 'pack', style, text: `${style} has no case pack (Master) on Master Sheet Live.` }); continue; }
       const off = [...packs].filter(([pack]) => pack !== m.pack);
       if (off.length) out.push({ kind: 'pack', style, master: m.pack,
@@ -785,7 +855,7 @@
     const off = !!master && (!m || m.pack == null || row.packs.some(p => p !== m.pack));
     const bad = row.packs.length > 1 || off;
     let text = row.packs.join(' / ');
-    if (master && !m) text += ' (not on master)';
+    if (master && !m) text += master.copyOnly ? ' (not on the saved copy yet)' : ' (not on master)';
     else if (master && m.pack == null) text += ' (no master pack)';
     else if (off) text += ' (master ' + m.pack + ')';
     return { bad, value: !bad && row.packs.length === 1 ? row.packs[0] : text, master: m };
@@ -972,7 +1042,7 @@
   }
 
   return { CUSTOMERS, TONES, customer, read, readSheet, readMarmaxx, readMarmaxxDistro, readDistroSheet, isDistroPages, rows, checkBatch,
-           flags, distroIssues, parseMaster, masterPack, masterSays, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig,
+           flags, distroIssues, parseMaster, masterPack, masterSays, compactMaster, expandMaster, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig,
            recap, cellText, cellTip, variantsTip, worksheet, distroSheet, sheetName, defaultName,
            int, num, iso, md, mdy, fmt, money, words, colName };
 });

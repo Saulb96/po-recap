@@ -137,4 +137,40 @@ function marmaxxDistro(o) {
   return [{ n: 1, items, images: [{ w: 308, h: 78 }] }];
 }
 
-module.exports = { marmaxxPO, marmaxxDistro, MAR_DCS, LAYOUT };
+// The TJ Maxx layout of the same instructions: "PG/" "L" over "N", "Vendor" over "Style #", "DC#" and its number apart,
+// lines numbered 1/1, the description wrapped above and below its line, "PO #: 10 900101", "Order" over "Date".
+const TJ_DCS = [{ prefix: '10', code: 'SAN', name: 'TJM SAN ANTONIO', dc: '891' }, { prefix: '40', code: 'CHA', name: 'CHARLOTTE', dc: '894' },
+                { prefix: '60', code: 'WOR', name: 'WORCESTER', dc: '896' }, { prefix: '70', code: 'EVN', name: 'EVANSVILLE', dc: '897' },
+                { prefix: '80', code: 'TLV', name: 'MAXX LAS VEGAS', dc: '898' }];
+function marmaxxDistroTJ(o) {
+  const dcs = o.dcs || TJ_DCS, X = [28, 178, 327, 477, 626], DX = [516, 568, 619, 671, 723];
+  const items = [
+    it('Page', 706, 557), it('1', 727, 557), it('of', 733, 557), it('1', 742, 557),
+    it('ROUTING AND DISTRIBUTION INSTRUCTIONS', 280, 546),
+    it('PO Number:', 129, 536), it(o.po, 180, 536), it('PO Type:', 293, 536), it('DOMESTIC', 332, 536),
+    it('Version:', 449, 536), it(o.version, 486, 536), it('Version', 567, 536), it('Date:', 599, 536), it('10/29/2026 03:53 PM', 623, 536),
+    it('Dept #', 129, 525), it('Order', 181, 525), it('Start Ship', 233, 525), it('Consolidato', 293, 525), it('r', 340, 525), it('G.O.H.', 355, 525), it('F.O.B', 399, 525),
+    it('Date', 181, 515), it('Date', 233, 515), it('Cancel Date', 293, 515),
+    it('88', 129, 507), it(o.order || '10/28/2026', 181, 507), it(o.start || '11/08/2026', 233, 507), it(o.cancel || '11/15/2026', 293, 507), it('N', 355, 507), it('F', 399, 507),
+    it('TJX C', 36, 503), it('ompanies', 58, 503),
+    it('PG/', 28, 317), it('L', 42, 317), it('Vendor', 60, 317), it('TJX', 115, 317), it('Description', 160, 317), it('Color', 284, 317), it('Vendor', 334, 317),
+    it('Store', 382, 317), it('Nest', 428, 317), it('Total', 471, 317),
+    it('N', 28, 308), it('Style #', 60, 308), it('Style #', 115, 308), it('Pack', 334, 308), it('Ready', 382, 308), it('Code', 428, 308), it('Units', 471, 308),
+    it('Size', 334, 299), it('Pack', 382, 299),
+  ];
+  dcs.forEach((d, i) => {
+    const [first, ...rest] = (d.code + ': ' + d.name).split(' ').reduce((a, w, j) => (j < 3 ? (a[0] = (a[0] ? a[0] + ' ' : '') + w) : a.push(w), a), ['']);
+    items.push(it('Distribution Center', X[i], 409), it(`PO #: ${d.prefix} ${o.po}`, X[i], 400), it('Ship Merchandise to:', X[i], 392),
+      it(first, X[i], 384), ...rest.map((w, j) => it(w, X[i] + 52 + 30 * j, 384)), it(`DC #: ${d.dc}`, X[i], 376));
+    items.push(it(d.code, DX[i], 317), it('DC#', DX[i], 308), it(d.dc, DX[i] + 18, 308), it('Units', DX[i], 299));
+  });
+  o.lines.forEach((l, i) => {
+    const y = 276 - 17 * i, [top, ...under] = l.desc.split(' / ');
+    items.push(it('12 ' + top, 160, y + 4), it('1/' + (i + 1), 28, y), it(l.style, 60, y), it(l.tjx || String(257500 + i), 115, y), it(l.pack, 334, y), it(l.total, 471, y));
+    if (under.length) items.push(it(under.join(' '), 160, y - 4));
+    dcs.forEach((d, j) => { if (l.units[d.dc] != null) items.push(it(l.units[d.dc], DX[j], y)); });
+  });
+  return [{ n: 1, items, images: [] }];
+}
+
+module.exports = { marmaxxPO, marmaxxDistro, marmaxxDistroTJ, MAR_DCS, TJ_DCS, LAYOUT };

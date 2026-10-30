@@ -57,6 +57,33 @@ test('a distribution PDF to TJ Maxx DCs (prefixes 10-80) reads as TJ Maxx', () =
   assert.equal(distro({ dcs, lines }).distro.banner, 'TJ Maxx');
 });
 
+test('the TJ Maxx layout: split headings, DC# apart from its number, 1/1 lines, descriptions wrapped around their line', () => {
+  const { marmaxxDistroTJ } = require('./fixtures.js');
+  const lines = [{ style: 'ZZ47208', desc: 'FACIAL CLEANSING WIPES / ROSEWATER', pack: 16, total: 832, units: { 891: 80, 894: 176, 896: 128, 897: 400, 898: 48 } },
+                 { style: 'ZZ47724', desc: '4PK FACIAL CLEANSING / WIPES', pack: 16, total: 832, units: { 891: 80, 894: 176, 896: 128, 897: 400, 898: 48 } }];
+  const r = Recap.read('marmaxx', marmaxxDistroTJ({ po: '900102', version: 1, lines }), 'TJMAXX_DISTRIBUTION_INSTRUCTIONS_900102_V1.pdf');
+  assert.equal(r.error, undefined);
+  const d = r.distro;
+  assert.deepEqual({ po: d.po, version: d.version, versionDate: d.versionDate, banner: d.banner, dept: d.dept, order: d.orderDate, start: d.startShip, cancel: d.cancel },
+    { po: '900102', version: 1, versionDate: '2026-10-29', banner: 'TJ Maxx', dept: '88', order: '2026-10-28', start: '2026-11-08', cancel: '2026-11-15' });
+  assert.deepEqual(d.dcs.map(x => x.prefix + '/' + x.code + '/' + x.dc + '/' + x.name),
+    ['10/SAN/891/TJM SAN ANTONIO', '40/CHA/894/CHARLOTTE', '60/WOR/896/WORCESTER', '70/EVN/897/EVANSVILLE', '80/TLV/898/MAXX LAS VEGAS']);
+  assert.deepEqual(d.lines.map(l => [l.ln, l.style, l.desc, l.pack, l.total, l.units[897]]),
+    [['1/1', 'ZZ47208', 'FACIAL CLEANSING WIPES ROSEWATER', 16, 832, 400], ['1/2', 'ZZ47724', '4PK FACIAL CLEANSING WIPES', 16, 832, 400]]);
+});
+
+test('the table is found by its own "Total" heading, not other "Total" text; a page with no table is passed over', () => {
+  const pages = marmaxxDistro({ po: '900101', version: 1, lines: DLINES });
+  // a note above the table that says "Total", first on the page
+  pages[0].items.unshift({ s: 'Total', x: 37, y: 465, w: 20 }, { s: 'cartons must match the PO', x: 60, y: 465, w: 120 });
+  // a second page of notes only, with a "Total" of its own
+  pages.push({ n: 2, items: [{ s: 'PO Number:', x: 133, y: 537, w: 50 }, { s: '900101', x: 186, y: 537, w: 30 },
+    { s: 'Total', x: 37, y: 300, w: 20 }, { s: 'units are per DC', x: 60, y: 300, w: 80 }], images: [] });
+  const r = Recap.read('marmaxx', pages, 'x.pdf');
+  assert.equal(r.error, undefined);
+  assert.deepEqual(r.distro.lines.map(l => [l.style, l.total]), [['ZZ10001', 1440], ['ZZ10002', 480]]);
+});
+
 test('a PO is never taken for a distro, though every PO mentions "routing and distribution instructions"', () => {
   assert.ok(po().po);
   assert.equal(Recap.isDistroPages(marmaxxPO({ po: '900101', ref: 'D1', lines: LINES })), false);
@@ -229,6 +256,33 @@ test('Master Sheet Live\'s PO blocks: the rows under a PO share its order date, 
   const p = Recap.masterPack(m, 'ZZ20001');
   assert.deepEqual([p.pack, p.row, p.po, p.date, p.others], [24, 5, '102430', '2026-06-05', [48, 36]]);
   assert.equal(Recap.masterPack(m, 'ZZ20002').po, '101860');
+});
+
+test('the saved copy of Master Sheet Live gives the same case packs, with no prices or factories in it', () => {
+  const m = Recap.parseMaster(MASTER);
+  const copy = JSON.parse(JSON.stringify(Recap.compactMaster(m)));
+  assert.deepEqual(copy.styles.ZZ10001, [[2, 24, '101000', '2025-12-09'], [3, 48, '102000', '2026-06-27']], 'the latest row for each pack; the row with no pack is dropped');
+  assert.deepEqual(copy.styles.ZZ10003, [[7, null, '102001', '2026-10-05']], 'a style with no pack keeps one row');
+  assert.ok(!JSON.stringify(copy).includes('"F"'), 'no factory names');
+  const back = Recap.expandMaster(copy);
+  for (const s of ['ZZ10001', 'ZZ10002', 'ZZ10003', 'ZZ19999']) {
+    const a = Recap.masterPack(m, s), b = Recap.masterPack(back, s);
+    assert.deepEqual(b && (b.pack == null ? null : [b.pack, b.row, b.po, b.date, b.others]), a && (a.pack == null ? null : [a.pack, a.row, a.po, a.date, a.others]), s);
+  }
+});
+
+test('a style missing from a copy that couldn\'t be updated says so, not that it isn\'t on Master Sheet Live', () => {
+  const copy = Recap.expandMaster(Recap.compactMaster(Recap.parseMaster(MASTER)), true);
+  const p = po({ lines: [{ ...LINES[0], style: 'ZZ19999' }] }).po;
+  assert.match(Recap.packIssues([p], copy)[0].text, /^ZZ19999 isn't on the saved copy of Master Sheet Live yet, .* updates when someone who can open Master Sheet Live opens this buy\.$/);
+  assert.match(Recap.packIssues([p], Recap.expandMaster(Recap.compactMaster(Recap.parseMaster(MASTER)), false))[0].text, /^ZZ19999 isn't on Master Sheet Live,/);
+});
+
+test('a style on the copy with no case pack is kept as having none, so the page knows to ask Master Sheet Live again', () => {
+  const copy = Recap.compactMaster(Recap.parseMaster(MASTER));
+  assert.ok(copy.styles.ZZ10003.every(r => r[1] == null));
+  const p = po({ lines: [{ ...LINES[0], style: 'ZZ10003' }] }).po;
+  assert.match(Recap.packIssues([p], Recap.expandMaster(copy, false))[0].text, /^ZZ10003 has no case pack/);
 });
 
 test('the sheet says whether the case packs were checked', () => {

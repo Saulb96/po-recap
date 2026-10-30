@@ -232,8 +232,8 @@ details.dist .tw{padding:0 16px 12px}
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<script src="recap.js?v=20261030a"></script>
-<script src="mail.js?v=20261030a"></script>
+<script src="recap.js?v=20261030c"></script>
+<script src="mail.js?v=20261030c"></script>
 <script>
 "use strict";
 /* ============================== CONFIG ============================== */
@@ -259,7 +259,8 @@ const PATHS = {
   dir  : id => CFG.root + "/Buys/" + id,
   pdf  : (id, po) => CFG.root + "/Buys/" + id + "/" + po + ".pdf",
   // a distro's file carries its version, so a newer one never overwrites the one in use before it's saved
-  distro: (id, po, v, ext) => CFG.root + "/Buys/" + id + "/" + po + "-distro-v" + (v || 0) + "." + (ext || "pdf")
+  distro: (id, po, v, ext) => CFG.root + "/Buys/" + id + "/" + po + "-distro-v" + (v || 0) + "." + (ext || "pdf"),
+  packs: CFG.root + "/Master/case-packs.json"   // the saved copy of Master Sheet Live's case packs, for everyone
 };
 const distroPath = (id, p) => PATHS.distro(id, p.po, p.distro.version, p.distro.file && p.distro.file.ext);
 const extOf = name => { const m = /\.([a-z0-9]{2,5})$/i.exec(String(name || "")); return m ? m[1].toLowerCase() : ""; };
@@ -702,7 +703,7 @@ async function saveJob(){
     if (out.lost.length) setSave("Saved, but not the distro for " + out.lost.map(d => d.po).join(", ") + ": someone else removed the PO or saved a newer distro meanwhile.", true);
     else setSave("Saved");
     if (job.kind === "new") location.hash = "#/buy/" + id;
-    else { S.adding = false; renderBuy(); }
+    else { S.adding = false; renderBuy(); loadMaster(); }   // new styles may need the case-pack copy brought up to date
   } catch(e){
     if (e === CANCELLED){
       // a new buy's files go; on an existing buy only the files this save uploaded (none is in the buy yet)
@@ -918,25 +919,105 @@ function renderBuy(){
   restoreEdits(keep);
   renderJob(); syncDrop(); syncPick(); paintTask();
 }
+const whenText = d => d.toLocaleString([], { month:"numeric", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit" });
 function masterStatus(){
   const m = S.master;
-  if (!m || m.loading) return "Case packs: reading Master Sheet Live…";
+  if (!m) return "Case packs: checking…";
+  if (m.loading) return "Case packs: checking Master Sheet Live…" + (m.data ? " (meanwhile from the saved copy)" : "");
   if (m.error) return 'Case packs not checked: ' + esc(m.error) + ' · <a href="#" data-act="masterRetry">Try again</a>';
-  const t = m.at;
-  return "Case packs checked against Master Sheet Live, read " + t.toLocaleTimeString([], { hour:"numeric", minute:"2-digit" }) + ' · <a href="#" data-act="masterRetry">Read again</a>';
+  if (m.source === "live") return "Case packs from Master Sheet Live, read " + whenText(m.at) +
+    (m.saveError ? ' (<span class="bad-t">the saved copy couldn\'t be updated: ' + esc(m.saveError) + "</span>)" : "; the saved copy is updated") + ' · <a href="#" data-act="masterRetry">Read again</a>';
+  return "Case packs from the saved copy of Master Sheet Live, updated " + whenText(m.at) + (m.by ? " by " + esc(m.by) : "") +
+    (m.missing.length ? '; <span class="bad-t">' + m.missing.length + " style" + (m.missing.length > 1 ? "s aren't" : " isn't") + " on it yet</span>" : "") +
+    ' · <a href="#" data-act="masterRetry">Update from Master Sheet Live</a>';
 }
-/* Master Sheet Live is read once per visit (about 2 MB). ensureMaster gives the read in progress, or starts one; the
-   buy page re-renders when it arrives. Resolves to the data, or null when it couldn't be read (S.master.error says why). */
-let masterRead = null;
-function ensureMaster(force){
-  if (masterRead && !force && !(S.master && S.master.error)) return masterRead;
-  S.master = { loading:true };
-  const st = $("#masterSt"); if (st) st.innerHTML = masterStatus();
-  masterRead = readMaster().then(data => { S.master = { data, at:new Date() }; return data; }, e => { S.master = { error:errMsg(e) }; return null; });
-  return masterRead;
+
+/* ============================== CASE PACKS ============================== */
+// Everyone who uses PO Recap reads the saved copy of Master Sheet Live's case packs (PATHS.packs), so nobody needs access
+// to Master Sheet Live itself. The copy is brought up to date from Master Sheet Live, read only, when a buy has a style
+// it doesn't have or it's a day old, by whoever opens the buy and can open Master Sheet Live; for anyone else it's used
+// as it is, and a style missing from it says so. S.master: { data, at, source:"live"|"copy", by, missing, saveError }, or
+// { error }; with loading set while Master Sheet Live is being read (the copy meanwhile, when there is one).
+const PACK_AGE = 24 * 3600 * 1000,   // the copy is refreshed (when it can be) once it's a day old
+      LIVE_FRESH = 15 * 60 * 1000,   // a read of Master Sheet Live answers everything for 15 minutes: no re-download
+      COPY_FRESH = 60 * 1000;        // the copy is read again after a minute, so someone else's update shows here
+const packStyles = buys => [...new Set(buys.flatMap(b => b.pos.flatMap(p => p.lines.map(l => l.style).concat(p.distro ? p.distro.lines.map(l => l.style) : []))))];
+let packWork = null;
+async function ensurePacks(styles, force, onStep){
+  while (packWork) await packWork.catch(() => null);   // one at a time; the next then decides for itself
+  packWork = (async () => {
+    try {
+      if (!force && S.live && Date.now() - S.live.at < LIVE_FRESH){
+        S.master = { data:S.live.data, at:new Date(S.live.at), source:"live", missing:[], saveError:S.live.saveError };
+        return S.live.data;
+      }
+      if (force || !S.packCopy || Date.now() - S.packCopy.readAt > COPY_FRESH)
+        S.packCopy = Object.assign((await readJson(PATHS.packs)) || { data:null, etag:null }, { readAt:Date.now() });
+      const copy = S.packCopy.data;
+      const on = s => copy && Object.prototype.hasOwnProperty.call(copy.styles, String(s).toUpperCase()) ? copy.styles[String(s).toUpperCase()] : null;
+      // styles the copy doesn't have, and those it has without a case pack: worth asking Master Sheet Live about
+      const notOn = styles.filter(s => !on(s));
+      const ask = notOn.concat(styles.filter(s => on(s) && on(s).every(r => r[1] == null)));
+      const old = !copy || Date.now() - new Date(copy.updated).getTime() > PACK_AGE;
+      const asCopy = extra => copy
+        ? Object.assign({ data:R.expandMaster(copy, notOn.length > 0), at:new Date(copy.updated), source:"copy", by:copy.updatedBy, missing:notOn }, extra)
+        : Object.assign({ error:"there's no saved copy of the case packs yet, and Master Sheet Live couldn't be read" + (S.liveError ? " (" + S.liveError + ")" : "") }, extra);
+      if (force || ((ask.length || old) && !S.liveDenied)){
+        // meanwhile the copy, so a style that's only off the copy doesn't read as off Master Sheet Live
+        S.master = asCopy({ loading:true });
+        if (onStep) onStep();
+        const started = new Date().toISOString();
+        try {
+          const live = await readMaster();
+          S.live = { data:live, at:Date.now() };
+          S.master = { data:live, at:new Date(), source:"live", missing:[] };
+          const fresh = Object.assign(R.compactMaster(live), { updated:started, updatedBy:me(), source:CFG.master.name });
+          try { await savePackCopy(fresh); } catch(e){ S.master.saveError = S.live.saveError = errMsg(e); }
+          return live;
+        } catch(e){
+          S.liveDenied = true; S.liveError = errMsg(e);   // not asked again this visit, unless someone clicks to update
+          S.master = asCopy({});
+          return S.master.data || null;
+        }
+      }
+      // the copy as it is: up to date for these styles, or (Master Sheet Live refused this visit) still missing some
+      S.master = asCopy({});
+      return S.master.data || null;
+    } catch(e){
+      S.master = { error:"the case packs couldn't be read (" + errMsg(e) + ")" };
+      return null;
+    }
+  })();
+  try { return await packWork; } finally { packWork = null; }
+}
+/* The copy only ever moves forward: on a 412, a copy someone else saved from a later read of Master Sheet Live stays */
+async function savePackCopy(fresh){
+  for (let n = 0; n < 3; n++){
+    try { const etag = await writeJson(PATHS.packs, fresh, S.packCopy && S.packCopy.etag); S.packCopy = { data:fresh, etag, readAt:Date.now() }; return; }
+    catch(e){
+      if (e.status !== 412) throw e;
+      const cur = await readJson(PATHS.packs);
+      S.packCopy = Object.assign(cur || { data:null, etag:null }, { readAt:Date.now() });
+      if (cur && cur.data && cur.data.updated >= fresh.updated) return;
+    }
+  }
+  throw new Error("it kept changing while being saved");
 }
 function loadMaster(force){
-  ensureMaster(force).then(() => { if (S.view === "buy" && S.buy) renderBuy(); });
+  if (force) S.liveDenied = false;
+  const b = S.buy;
+  if (!b) return;
+  const paint = () => { if (S.view === "buy" && S.buy && S.buy.id === b.id) renderBuy(); };
+  ensurePacks(packStyles([b]), force, paint).then(paint);
+}
+/* What a buy's sheet says about its case packs: only its own styles count */
+function packNote(b){
+  const m = S.master;
+  if (!m || !m.data) return { packNote:"NOT checked: " + ((m && m.error) || "the case packs couldn't be read"), packChecked:false };
+  if (m.source === "live") return { packNote:"checked against Master Sheet Live, read " + whenText(m.at), packChecked:true };
+  const mine = b ? m.missing.filter(s => packStyles([b]).includes(s)) : m.missing;
+  return { packNote:"checked against the saved copy of Master Sheet Live, updated " + whenText(m.at) + (m.by ? " by " + m.by : "") +
+    (mine.length ? "; NOT checked for " + mine.join(", ") + " (not on the copy yet)" : ""), packChecked:!mine.length };
 }
 function paintTask(){
   const box = $("#taskStrip");
@@ -1002,7 +1083,7 @@ function packTd(r, master){
   const pk = R.packCell(r, master), m = pk.master;
   const tip = [r.packs.length > 1 ? "The POs give packs " + r.packs.join(" / ") + "." : "The POs give pack " + r.packs.join("") + "."];
   if (master){
-    if (!m) tip.push(r.style + " isn't on Master Sheet Live.");
+    if (!m) tip.push(r.style + (master.copyOnly ? " isn't on the saved copy of Master Sheet Live yet: it updates when someone who can open Master Sheet Live opens this buy." : " isn't on Master Sheet Live."));
     else if (m.pack == null) tip.push(r.style + " has no case pack on Master Sheet Live.");
     else tip.push(R.masterSays(m) + ".");
   } else tip.push("Not checked against Master Sheet Live yet.");
@@ -1267,17 +1348,18 @@ async function exportBuys(ids){
   if (typeof XLSX === "undefined"){ setSave("The Excel library didn't load (cdn.jsdelivr.net blocked?).", true); return; }
   setSave("Making the Excel file…");
   try {
-    const wb = XLSX.utils.book_new(), used = new Set(), names = [];
+    const wb = XLSX.utils.book_new(), used = new Set(), names = [], buys = [];
     for (const id of ids){
       const b = S.buy && S.buy.id === id ? S.buy : ((await readJson(PATHS.buy(id))) || {}).data;
-      if (!b) continue;
-      // the case packs are checked on the sheet only against Master Sheet Live: read it first if it isn't yet, and say
-      // on the sheet when it couldn't be
-      if (!masterData()){ setSave("Reading Master Sheet Live for the case packs…"); await ensureMaster(); }
-      const master = masterData();
-      const packNote = master ? "checked against Master Sheet Live, read " + S.master.at.toLocaleString([], { month:"numeric", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit" })
-                              : "NOT checked: Master Sheet Live couldn't be read (" + ((S.master && S.master.error) || "unknown") + ")";
-      XLSX.utils.book_append_sheet(wb, R.worksheet(b, null, master, { packNote, packChecked:!!master }), R.sheetName(b.name, used));
+      if (b) buys.push(b);
+    }
+    // the case packs for every style in these buys, from the saved copy (brought up to date when it can be); the sheet
+    // says what they were checked against, or that they weren't
+    setSave("Checking the case packs…");
+    await ensurePacks(packStyles(buys));
+    const master = masterData();
+    for (const b of buys){
+      XLSX.utils.book_append_sheet(wb, R.worksheet(b, null, master, packNote(b)), R.sheetName(b.name, used));
       const ds = R.distroSheet(b, master);
       if (ds) XLSX.utils.book_append_sheet(wb, ds, R.sheetName(b.name, used, " distro"));
       names.push(b.name);
@@ -1428,7 +1510,7 @@ async function start(){
   if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
   if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
   if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
-  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
+  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
   msalApp = new msal.PublicClientApplication({
     auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },
