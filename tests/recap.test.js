@@ -18,7 +18,7 @@ test('reads a Marshalls PO: header, dates, buyer, lines', () => {
   assert.equal(r.error, undefined);
   assert.deepEqual({ ...r.po, lines: undefined }, {
     po: '900101', banner: 'Marshalls', dept: '88', ref: 'D000000001', vendor: 'ZZ99', buyer: 'PAT SAMPLE',
-    orderDate: '2026-10-01', startShip: '2026-10-08', cancel: '2026-10-15', totalUnits: 3552, lines: undefined });
+    orderDate: '2026-10-01', startShip: '2026-10-08', cancel: '2026-10-15', fob: { city: '', state: 'NY' }, totalUnits: 3552, lines: undefined });
   assert.deepEqual(r.po.lines, [
     { ln: '1/1', catg: '1438', style: 'ZZ10001', desc: '2PK CREAM BLUSH STICK', code: '12', cost: 3.5, units: 1440, pack: 48 },
     { ln: '1/2', catg: '1336', style: 'ZZ10002', desc: 'LIP BUTTER BALM VANIL', code: '12', cost: 1.95, units: 480, pack: 48 },
@@ -121,7 +121,9 @@ test('checkBatch: a PO already in this buy or in another buy is refused by name'
 
 /* ---------------- flags ---------------- */
 
-const P = (o, lines = LINES) => read({ ...o, lines }).po;
+// POs for the flag, recap and sheet tests ship FOB Los Angeles, so only what each test is about gets flagged
+const LA = { city: 'LOS ANGELES', state: 'CA' };
+const P = (o, lines = LINES) => read({ fob: LA, ...o, lines }).po;
 
 test('flags: a reference with one banner, a pair with the same banner, costs and descriptions that differ, a PO sent twice', () => {
   const pos = [
@@ -243,17 +245,18 @@ test('worksheet: a style that varies is red, its cells read units-cost-descripti
   const ws = Recap.worksheet(b);
   const h = +Object.keys(ws).find(k => k[0] !== '!' && ws[k].v === 'Check').slice(1);
   const at = (c, r) => ws[c + r];
-  // rows: ZZ10002 (1336) at h+3, ZZ10001 (1438) at h+4; columns E = 900101, F = 900102
-  assert.deepEqual(['C', 'D', 'E', 'F'].map(c => at(c, h + 4).v),
+  // rows: ZZ10002 (1336) at h+3, ZZ10001 (1438) at h+4; columns E = Pack, F = 900101, G = 900102
+  assert.deepEqual(['C', 'D', 'F', 'G'].map(c => at(c, h + 4).v),
     ['2pk Lip Liners Raise & Steady / 2PK CREAM BLUSH STICK', '3.00 / 3.50', '1440-$3.00-2pk Lip Liners Raise & Steady', '1440-$3.50-2PK CREAM BLUSH STICK']);
-  for (const c of ['C', 'D', 'E', 'F']) {
+  for (const c of ['C', 'D', 'F', 'G']) {
     assert.equal(at(c, h + 4).s.fill.fgColor.rgb, 'FFC7CE', c + ' is red');
     assert.equal(at(c, h + 4).s.font.color.rgb, '9C0006');
   }
-  assert.equal(at('E', h + 3).v, 480); assert.equal(at('E', h + 3).t, 'n');
-  assert.notEqual(at('E', h + 3).s.fill.fgColor.rgb, 'FFC7CE', 'a style that is the same everywhere keeps its window colour');
-  assert.equal(at('G', h + 4).v, 2880, 'Total units still counts the red cells');
-  assert.equal(at('E', h + 5).v, 1920, 'and so does the totals row');
+  assert.equal(at('E', h + 4).v, 48, 'the pack is the same on both POs and nothing to check it against: a plain number');
+  assert.equal(at('F', h + 3).v, 480); assert.equal(at('F', h + 3).t, 'n');
+  assert.notEqual(at('F', h + 3).s.fill.fgColor.rgb, 'FFC7CE', 'a style that is the same everywhere keeps its window colour');
+  assert.equal(at('H', h + 4).v, 2880, 'Total units still counts the red cells');
+  assert.equal(at('F', h + 5).v, 1920, 'and so does the totals row');
 });
 
 /* ---------------- the Excel sheet ---------------- */
@@ -266,17 +269,17 @@ test('worksheet: title, summary, three heading rows, Check first and Notes last,
   assert.equal(ws.B1.s.fill.fgColor.rgb, 'D9EAF7');
   const [headAt] = find('Check');
   const h = +headAt.slice(1);
-  assert.deepEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'].map(c => v(c + h)),
-    ['Check', 'Style', 'Description', 'Cost', '10/8–10/15', '', '10/12–10/19', '', 'Total units', 'Ext cost', 'Notes']);
-  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => v(c + (h + 1))), ['Marshalls', 'TJ Maxx', 'Marshalls', 'TJ Maxx']);
-  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => v(c + (h + 2))), [900101, 900102, 900104, 900103]);
-  assert.equal(ws['E' + (h + 2)].t, 'n', 'a PO # of digits is a number, as Excel takes it');
-  assert.deepEqual(['A', 'B', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'].map(c => v(c + (h + 4))), ['☐', 'ZZ10001', 3.5, 1440, 1440, 1440, '', 4320, 15120, 'update qty']);
+  assert.deepEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].map(c => v(c + h)),
+    ['Check', 'Style', 'Description', 'Cost', 'Pack', '10/8–10/15', '', '10/12–10/19', '', 'Total units', 'Ext cost', 'Notes']);
+  assert.deepEqual(['F', 'G', 'H', 'I'].map(c => v(c + (h + 1))), ['Marshalls', 'TJ Maxx', 'Marshalls', 'TJ Maxx']);
+  assert.deepEqual(['F', 'G', 'H', 'I'].map(c => v(c + (h + 2))), [900101, 900102, 900104, 900103]);
+  assert.equal(ws['F' + (h + 2)].t, 'n', 'a PO # of digits is a number, as Excel takes it');
+  assert.deepEqual(['A', 'B', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].map(c => v(c + (h + 4))), ['☐', 'ZZ10001', 3.5, 48, 1440, 1440, 1440, '', 4320, 15120, 'update qty']);
   assert.equal(v('D' + (h + 5)), '3.00 / 2.75');
-  assert.deepEqual(['E', 'H'].map(c => v(c + (h + 5))), ['1632-$3.00', '96-$2.75'], 'only the cost varies, so only the cost is noted');
-  assert.deepEqual(['B', 'E', 'F', 'G', 'H', 'I', 'J'].map(c => v(c + (h + 6))), ['Total', 3072, 1920, 1440, 96, 6528, 21216]);
-  assert.equal(ws['J' + (h + 4)].z, '$#,##0.00');
-  assert.ok(ws['!merges'].some(m => m.s.r === h - 1 && m.s.c === 4 && m.e.c === 5), 'the ship window spans its two POs');
+  assert.deepEqual(['F', 'I'].map(c => v(c + (h + 5))), ['1632-$3.00', '96-$2.75'], 'only the cost varies, so only the cost is noted');
+  assert.deepEqual(['B', 'F', 'G', 'H', 'I', 'J', 'K'].map(c => v(c + (h + 6))), ['Total', 3072, 1920, 1440, 96, 6528, 21216]);
+  assert.equal(ws['K' + (h + 4)].z, '$#,##0.00');
+  assert.ok(ws['!merges'].some(m => m.s.r === h - 1 && m.s.c === 5 && m.e.c === 6), 'the ship window spans its two POs');
   assert.ok(ws['!merges'].some(m => m.s.r === h - 1 && m.s.c === 0 && m.e.r === h + 1), 'Check spans the three heading rows');
   assert.equal(v('B' + (h + 9)), 'Flags');
   assert.match(v('B' + (h + 11)), /ZZ10003-F is costed/);
@@ -303,12 +306,12 @@ test('worksheet: each ship window keeps its colour from heading to totals, cells
   const fill = a => ws[a] && ws[a].s && ws[a].s.fill && ws[a].s.fill.fgColor.rgb;
   const h = +Object.keys(ws).find(k => k[0] !== '!' && ws[k].v === 'Check').slice(1);
   const [w0, w1] = Recap.TONES;
-  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + h)), [w0[0], w0[0], w1[0], w1[0]], 'ship window headings');
-  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + (h + 1))), [w0[0], w0[0], w1[0], w1[0]], 'banner headings');
-  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + (h + 2))), [w0[0], w0[0], w1[0], w1[0]], 'PO # headings');
-  assert.deepEqual(['E', 'F', 'G', 'H'].map(c => fill(c + (h + 4))), [w0[1], w0[1], w1[1], w1[1]], 'units, blanks too');
-  assert.deepEqual(['E', 'G'].map(c => fill(c + (h + 6))), [w0[0], w1[0]], 'totals');
-  assert.equal(fill('I' + (h + 4)), undefined, 'Total units stays uncoloured');
+  assert.deepEqual(['F', 'G', 'H', 'I'].map(c => fill(c + h)), [w0[0], w0[0], w1[0], w1[0]], 'ship window headings');
+  assert.deepEqual(['F', 'G', 'H', 'I'].map(c => fill(c + (h + 1))), [w0[0], w0[0], w1[0], w1[0]], 'banner headings');
+  assert.deepEqual(['F', 'G', 'H', 'I'].map(c => fill(c + (h + 2))), [w0[0], w0[0], w1[0], w1[0]], 'PO # headings');
+  assert.deepEqual(['F', 'G', 'H', 'I'].map(c => fill(c + (h + 4))), [w0[1], w0[1], w1[1], w1[1]], 'units, blanks too');
+  assert.deepEqual(['F', 'H'].map(c => fill(c + (h + 6))), [w0[0], w1[0]], 'totals');
+  assert.equal(fill('J' + (h + 4)), undefined, 'Total units stays uncoloured');
   const windowRow = +Object.keys(ws).find(k => k[0] === 'B' && ws[k].v === '10/12–10/19').slice(1);
   assert.equal(fill('B' + windowRow), w1[0], 'the summary\'s ship window row');
 });
@@ -317,7 +320,8 @@ test('sheet names: Excel-safe, 31 characters, never twice in one file', () => {
   const used = new Set();
   assert.equal(Recap.sheetName('Marmaxx buy 10/27', used), 'Marmaxx buy 10-27');
   assert.equal(Recap.sheetName('Marmaxx buy 10/27', used), 'Marmaxx buy 10-27 (2)');
-  assert.equal(Recap.sheetName('A very long buy name that goes on past the limit', used).length, 31);
+  assert.equal(Recap.sheetName('A very long buy name that goes on past the limit', used), 'A very long buy name that goes', 'cut at 31, no trailing space');
+  assert.equal(Recap.sheetName('Marmaxx buy 10/23 - 10/27 window', used, ' distro'), 'Marmaxx buy 10-23 - 10-2 distro', 'the suffix stays whole, within 31');
 });
 
 test('the default name is the customer and the day the POs are dropped in', () => {

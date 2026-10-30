@@ -6,7 +6,8 @@ const LAYOUT = {
   Marshalls: {
     logo: { w: 179, h: 38 },
     p1: { po: 191, ref: 285, buyer: [267.5, 534.1], order: [29.1, 510.1], start: [[102.4, 510.1, 'START SHIP DATE']], cancel: [192.4, 510.1],
-          dates: [[35, 470], [116, 470], [181, 469]], total: [539.2, 300.2] },
+          dates: [[35, 470], [116, 470], [181, 469]], total: [539.2, 300.2],
+          fob: { labels: [[602, 'CITY:'], [695, 'STATE:']], city: 640, state: 744 } },
     head: y => [it('DEPT:', 120, y), it('88', 152, y), it('DOMESTIC PO NO:', 172, y), null, it('REFERENCE NO:', 273, y), null,
                 it('CIR#:', 404, y), it('VENDOR NO:', 492, y), it('ZZ99', 548, y), it('VENDOR NAME:', 591, y)],
     poAt: [240, 350],
@@ -17,7 +18,8 @@ const LAYOUT = {
   'TJ Maxx': {
     logo: { w: 214, h: 51 },
     p1: { po: 181, ref: 268, buyer: [236.8, 535.8], order: [30.5, 510.3], start: [[106.4, 514.3, 'START SHIP'], [118, 506, 'DATE']], cancel: [183.1, 510.3],
-          dates: [[36, 472], [110, 472], [178, 466]], total: [510.3, 301.7] },
+          dates: [[36, 472], [110, 472], [178, 466]], total: [510.3, 301.7],
+          fob: { labels: [[593, 'CITY'], [609, ':'], [701, 'STATE:']], city: 625, state: 748 } },
     head: y => [it('DEPT', 105, y), it(':', 124, y), it('88', 142, y), it('DOMESTIC PO NO:', 160, y), null, it('REFERENCE NO:', 274, y), null,
                 it('CIR#:', 403, y), it('VENDOR NO:', 485, y), it('ZZ99', 544, y), it('VENDOR NAME:', 576, y)],
     poAt: [238, 347],
@@ -30,7 +32,8 @@ const LAYOUT = {
 const fmtUnits = n => n.toLocaleString('en-US');
 
 // o: { po, ref, banner, buyer, order, start, cancel (m/d/yyyy), lines: [{ style, desc, cost, units, catg }], total,
-//      logo, perPage, packUnits: { '1/2': n }, packExtra, noPack, headPo: { 2: 'other PO' }, commas }
+//      logo, perPage, packUnits: { '1/2': n }, packExtra, noPack, headPo: { 2: 'other PO' }, commas,
+//      fob: { city, state } (default state NY, as the real POs print it), noFob (no FOB labels at all) }
 function marmaxxPO(o) {
   const L = LAYOUT[o.banner || 'Marshalls'];
   const lines = o.lines.map((l, i) => Object.assign({ ln: '1/' + (i + 1), catg: '1438', pack: 48 }, l));
@@ -43,9 +46,14 @@ function marmaxxPO(o) {
 
   const p1 = [
     it('THIS ORDER IS SUBJECT TO THE ATTACHED TERMS AND CONDITIONS AND IMPORTANT VENDOR INSTRUCTIONS', 18, 595),
+    it('IMPORTANT: DO NOT SHIP', 18, 587), it('OR', 97, 587),
+    it('INVOICE WITHOUT ROUTING AND DISTRIBUTION INSTRUCTIONS. PLEASE CALL BUYER IF INSTRUCTIONS ARE NOT RECEIVED WITHIN 5 DAYS.', 108, 587),
     it('An Affiliate of The', 25, 544), it('TJX', 20, 534), it('Companies, Inc', 34, 534),
     it('DEPT', 106, 565), it('#', 127, 565), it('DOMESTIC PO', 175, 565), it('#', 226, 565), it('REFERENCE', 280, 565),
     it('88', 115, 550), it(o.po, L.p1.po, 550), it(o.ref, L.p1.ref, 550), it('ZZ99', 447, 550),
+    ...(o.noFob ? [] : L.p1.fob.labels.map(([x, s]) => it(s, x, 550))),
+    ...(o.noFob || !(o.fob || {}).city ? [] : [it(o.fob.city, L.p1.fob.city, 550)]),
+    ...(o.noFob ? [] : [it(o.fob ? o.fob.state : 'NY', L.p1.fob.state, 550)].filter(i => i.s)),
     it('BUYER:', ...L.p1.buyer), it(o.buyer || 'PAT SAMPLE', L.p1.buyer[0], L.p1.buyer[1] - 8),
     it('ORDER DATE', ...L.p1.order), ...L.p1.start.map(([x, y, s]) => it(s, x, y)), it('CANCELLED IF NOT RECEIVED BY DATE', ...L.p1.cancel),
     it(o.order || '10/1/2026', ...L.p1.dates[0]), it(o.start || '10/8/2026', ...L.p1.dates[1]), it(o.cancel || '10/15/2026', ...L.p1.dates[2]),
@@ -91,4 +99,42 @@ function marmaxxPO(o) {
   return pages;
 }
 
-module.exports = { marmaxxPO, LAYOUT };
+// A made-up TJX distribution PDF, one page, laid out where the real one prints each field (positions read through the
+// page viewport, y up from the bottom). o: { po, version, versionDate, order, start, cancel (m/d/yyyy),
+// dcs: [{ prefix, code, name, dc }], lines: [{ style, tjx, desc, pack, total, units: { dc: n } }], blockPo: { prefix: 'other PO' } }
+const MAR_DCS = [{ prefix: '01', code: 'AZR', name: 'MAR PHOENIX', dc: '881' }, { prefix: '04', code: 'ELP', name: 'MAR EL PASO', dc: '884' },
+                 { prefix: '06', code: 'BRI', name: 'BRIDGEWATER', dc: '886' }, { prefix: '07', code: 'ATL', name: 'ATLANTA', dc: '887' },
+                 { prefix: '08', code: 'WOB', name: 'WOBURN', dc: '888' }];
+function marmaxxDistro(o) {
+  const dcs = o.dcs || MAR_DCS, X = [35, 217, 366, 493, 619], DX = [541, 580, 622, 665, 708];
+  const items = [
+    it('Page', 706, 560), it('1', 727, 560), it('of', 734, 560), it('1', 743, 560),
+    it('ROUTING AND DISTRIBUTION INSTRUCTIONS', 280, 549),
+    it('PO Number:', 133, 537), it(o.po, 186, 537), it('PO Type: DOMESTIC', 288, 537),
+    ...(o.version != null ? [it('Version:', 439, 537), it(o.version, 476, 537)] : []),
+    it('Version Date:', 557, 537), it((o.versionDate || '04/09/2026') + ' 11:28 AM', 613, 537),
+    it('Dept #', 133, 526), it('Order Date', 171, 526), it('Start Ship Date', 221, 526), it('Consolidator', 284, 526), it('G.O.H.', 347, 526), it('F.O.B.', 393, 526),
+    it('Primary Vendor', 440, 526), it('Cancel Date', 284, 517),
+    it('An Affiliate of The', 51, 509),
+    it('88', 133, 505), it(o.order || '4/7/2026', 171, 505), it(o.start || '4/17/2026', 221, 505), it(o.cancel || '4/24/2026', 284, 505), it('N', 347, 505), it('C', 393, 505),
+    it('METRO1 SOLUTIONS', 440, 505), it('TJX Companies, Inc.', 45, 500),
+    it('Special Vendor Instructions', 37, 477),
+    it('PG-LN', 37, 314), it('Vendor Style', 77, 314), it('TJX Style #', 133, 314), it('Description', 199, 314), it('Color', 345, 314), it('Vendor', 383, 314),
+    it('Store', 422, 314), it('Nest', 469, 314), it('Total', 507, 314),
+    it('#', 77, 305), it('Pack', 383, 305), it('Ready', 422, 305), it('Code', 469, 305), it('Units', 507, 305),
+    it('Size', 383, 296), it('Pack Size', 422, 296),
+  ];
+  dcs.forEach((d, i) => {
+    items.push(it('Distribution Center', X[i], 415), it(`PO # ${d.prefix} ${(o.blockPo && o.blockPo[d.prefix]) || o.po}`, X[i], 403), it('Ship Merchandise to:', X[i], 392),
+      it(`${d.code}: ${d.name}`, X[i], 381), it(`DC #: ${d.dc}`, X[i], 370), it('1 MAIN STREET', X[i], 359));
+    items.push(it(d.code, DX[i], 314), it(`DC# ${d.dc}`, DX[i], 305), it('Units', DX[i], 296));
+  });
+  o.lines.forEach((l, i) => {
+    const y = 284 - 17 * i;
+    items.push(it('1-' + (i + 1), 37, y), it(l.style, 77, y), it(l.tjx || String(482000 + i), 133, y), it('5 ' + l.desc, 199, y), it(l.pack, 383, y), it('0', 422, y), it(l.total, 507, y));
+    dcs.forEach((d, j) => { if (l.units[d.dc] != null) items.push(it(l.units[d.dc], DX[j], y)); });
+  });
+  return [{ n: 1, items, images: [{ w: 308, h: 78 }] }];
+}
+
+module.exports = { marmaxxPO, marmaxxDistro, MAR_DCS, LAYOUT };
