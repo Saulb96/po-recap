@@ -19,7 +19,7 @@ test('a Burlington release: its PO, version, dates, DC, FOB, and the prepack lin
   const p = r.pos[0];
   assert.deepEqual({ ...p, lines: undefined }, {
     po: '900201101', banner: 'ZZ Sample (SMP) DC', dc: BDC, dept: 'Accsry', ref: '', buyer: '', orderDate: '2026-10-27', startShip: '2027-01-06', cancel: '2027-01-12',
-    fob: { term: 'DESTINATION', city: 'SAMPLETOWN', state: 'CA', to: 'ZZ Sample (SMP) DC' }, version: 2, release: 'A', totalUnits: 1296, lines: undefined });
+    fob: { term: 'DESTINATION', city: 'SAMPLETOWN', state: 'CA', to: 'ZZ Sample (SMP) DC' }, ticketing: 'must preticket', version: 2, release: 'A', totalUnits: 1296, lines: undefined });
   assert.deepEqual(p.lines, [{ ln: '1', catg: '', code: '', style: 'ZZ47001', desc: '9PC BRUSH SET', color: 'NUDE', cost: 4.4, units: 1296, pack: 12,
     prepacks: 108, prepack: 'ZZ47001 NUDE 16', packType: 'INNERPACK' }]);
   assert.equal(Recap.fobLabel(p.fob), 'Destination: ZZ Sample (SMP) DC, Sampletown CA');
@@ -177,4 +177,22 @@ test('a style that comes through with a space or colon in it is refused, and an 
   const p = Recap.read('burlington', blank).pos[0];
   assert.deepEqual(p.fob, { term: '', city: '', state: '' });
   assert.deepEqual(Recap.flags('burlington', [p]).filter(f => f.kind === 'fob').map(f => f.text), ['FOB point is blank, not Destination or LA, on 900201101.']);
+});
+
+test('ticketing: what the details sheet asks for, on every PO of the release; no ticketing line is no ticketing', () => {
+  assert.deepEqual(two().pos.map(p => [p.po, p.ticketing, Recap.ticketText(p)]), [['900202501', 'must preticket', 'Must preticket'], ['900202502', 'must preticket', 'Must preticket']]);
+  const none = one({ ticketing: null }).pos[0];
+  assert.equal(none.ticketing, '');
+  assert.equal(Recap.ticketText(none), 'No ticketing');
+  assert.equal(Recap.ticketText({ po: '1' }), 'not read', 'a PO saved before ticketing was read');
+  // on the sheet: a Ticketing line in the summary and a Ticketing row under the totals
+  const ws = Recap.worksheet(buyOf([none, ...two().pos]), null, null, {});
+  const cells = Object.keys(ws).filter(k => k[0] !== '!').map(k => [k, String(ws[k].v)]);
+  const at = v => cells.filter(([, x]) => x === v).map(([k]) => k);
+  assert.ok(cells.some(([, v]) => v === 'Must preticket: 900202501, 900202502; No ticketing: 900201101'), 'the summary line');
+  assert.equal(at('Ticketing').length, 2, 'the summary label and the row label');
+  const row = at('Ticketing').map(k => +k.replace(/\D/g, '')).sort((a, b) => b - a)[0];
+  assert.deepEqual(cells.filter(([k]) => +k.replace(/\D/g, '') === row && k[0] >= 'F').map(([, v]) => v).sort(), ['Must preticket', 'Must preticket', 'No ticketing']);
+  // a Marmaxx sheet has neither
+  assert.ok(!Object.keys(Recap.worksheet({ id: 'm', name: 'M', customer: 'marmaxx', pos: [], notes: {} }, null, null, {})).some(k => k[0] !== '!' && false));
 });

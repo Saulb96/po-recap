@@ -157,6 +157,8 @@ table.g{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-
 .g thead tr.h2 input[type=checkbox]{width:13px;height:13px}
 .g .dd{display:inline-block;width:7px;height:7px;border-radius:50%;margin-left:4px;vertical-align:1px;background:#c6ced9}
 .g .dd.ok{background:var(--good)} .g .dd.bad{background:var(--bad)}
+.g .tk{display:inline-block;font-style:normal;font-size:9px;font-weight:700;line-height:13px;padding:0 3px;margin-left:4px;border-radius:3px;background:var(--warn-soft);color:var(--warn);vertical-align:1px}
+.tk-t{color:var(--warn);font-weight:600}
 .pickbar{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--grid);background:rgba(47,155,214,.08);font-size:12.5px}
 .chip{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:1px 7px;border-radius:999px;background:var(--warn-soft);color:var(--warn);margin-right:2px;flex:0 0 auto}
 .drops{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -232,8 +234,8 @@ details.dist .tw{padding:0 16px 12px}
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<script src="recap.js?v=20261030e"></script>
-<script src="mail.js?v=20261030e"></script>
+<script src="recap.js?v=20261102a"></script>
+<script src="mail.js?v=20261102a"></script>
 <script>
 "use strict";
 /* ============================== CONFIG ============================== */
@@ -813,11 +815,11 @@ function renderJob(){
          fl.map(f => "<li>" + esc(f.text) + "</li>").join("") + "</ul></div>";
   if (acc.length){
     const tones = R.recap({ customer:job.key, pos:acc }).tones;
-    h += '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>' + esc(L.banner) + "</th><th>" + (cust.ref === false ? "Version" : "Reference") + '</th><th>Ship window</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th><th>File</th></tr></thead><tbody>' +
+    h += '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>' + esc(L.banner) + "</th><th>" + (cust.ref === false ? "Version" : "Reference") + '</th><th>Ship window</th><th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th>' + (cust.ticketing ? "<th>Ticketing</th>" : "") + '<th>File</th></tr></thead><tbody>' +
       acc.map(p => {
         const ext = p.lines.reduce((t, l) => t + Math.round(l.units * l.cost * 100), 0) / 100;
         return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + esc(cust.ref === false ? vText(p) : p.ref) + "</td><td>" + swatch(tones[p.po]) + R.md(p.startShip) + "–" + R.md(p.cancel) +
-          '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(p.totalUnits) + '</td><td class="n">' + R.money(ext) + "</td><td>" + esc(p.file) + "</td></tr>";
+          '</td><td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(p.totalUnits) + '</td><td class="n">' + R.money(ext) + "</td>" + (cust.ticketing ? "<td>" + tkCell(p) + "</td>" : "") + "<td>" + esc(p.file) + "</td></tr>";
       }).join("") + "</tbody></table></div>";
   }
   const what = [acc.length - reps && plural(acc.length - reps, "PO"), reps && plural(reps, "new PO version"), dis.length && plural(dis.length, "distro")].filter(Boolean).join(" and ");
@@ -932,6 +934,8 @@ function renderBuy(){
   const withD = b.pos.filter(p => p.distro).length, noFob = b.pos.filter(p => !("fob" in p));
   const L = R.labelOf(b.customer), hasD = !!cust.readDistro;
   const fobOff = !!cust.fobOK && b.pos.some(p => !cust.fobOK(p.fob));
+  const noTk = cust.ticketing ? b.pos.filter(p => !("ticketing" in p)) : [], unread = b.pos.filter(p => !("fob" in p) || (cust.ticketing && !("ticketing" in p)));
+  const unreadWhat = [noFob.length && "FOB point", noTk.length && "ticketing"].filter(Boolean), them = unread.length > 1 ? "them" : "it";
   // the KPI says a term FOB's term (Destination) and puts where it is under it
   const fobShort = [...new Set(b.pos.filter(p => "fob" in p).map(p => p.fob && p.fob.term ? R.fobLabel({ term:p.fob.term }) : R.fobLabel(p.fob) || "not read"))];
   const fobTo = [...new Set(b.pos.filter(p => p.fob && p.fob.to).map(p => R.fobLabel(p.fob).replace(/^[^:]*:\s*/, "")))];
@@ -943,8 +947,9 @@ function renderBuy(){
        '<div class="meta">' + esc(cust.name) + " · created " + dayOf(b.created) + " by " + esc(b.by) + (b.updatedBy && b.updated !== b.created ? " · last changed " + dayOf(b.updated) + " by " + esc(b.updatedBy) : "") +
        (cust.buyer === false && !sm.buyers.length ? "" : " · buyer " + esc(sm.buyers.join(", ") || "—")) + " · ordered " + ordered + (sm.depts.length ? " · dept " + esc(sm.depts.join(", ")) : "") + "</div>" +
        '<div class="job" id="taskStrip"></div>' +
-       (noFob.length && !S.task ? '<div class="job"><div class="strip"><span>' + noFob.length + " PO" + (noFob.length > 1 ? "s were" : " was") +
-         " saved before FOB point was read, so it isn't shown or checked for " + (noFob.length > 1 ? "them" : "it") + '.</span><div class="spacer"></div><button class="btn sm" data-act="readFob">Read FOB from their PDFs</button></div></div>' : "") +
+       (unread.length && !S.task ? '<div class="job"><div class="strip"><span>' + unread.length + " PO" + (unread.length > 1 ? "s were" : " was") +
+         " saved before " + unreadWhat.join(" and ") + (unreadWhat.length > 1 ? " were" : " was") + " read, so " + (unreadWhat.length > 1 ? "they aren't" : "it isn't") + " shown for " + them +
+         '.</span><div class="spacer"></div><button class="btn sm" data-act="readFob">Read ' + (unreadWhat.length > 1 ? "them" : noTk.length ? "ticketing" : "FOB") + " from their PDFs</button></div></div>" : "") +
        (S.adding ? '<div class="imp"><div class="drop off" id="drop" tabindex="0" role="button" aria-disabled="true"><div class="arrow">↓</div><div><b>Drop ' + esc(cust.name) + ' POs' + (hasD ? " or distros" : "") + ' to add here</b><span class="hint" id="dropHint"></span></div></div>' +
                    '<div class="drops"><button class="btn" id="pickFolder" data-act="pickFolder" disabled>Pick a folder</button><button class="btn" data-act="addClose">Cancel</button></div></div><div class="job" id="job"></div>' : "") +
        "</section>";
@@ -1119,6 +1124,8 @@ function recapTable(b, rc, fl, master){
   const starts = new Set(rc.windows.map(w => w.banners[0].pos[0].po));
   const tone = p => "t" + rc.tones[p.po] + (starts.has(p.po) ? " wst" : "");
   // a dot under each PO for its distro: green when it's in and matches, red when it doesn't, grey when not in yet
+  // a T under each PO the customer wants ticketed, saying how on hover
+  const tk = p => cust.ticketing && p.ticketing ? '<i class="tk" data-tip="' + esc("PO " + p.po + ": " + R.ticketText(p)) + '">T</i>' : "";
   const dot = p => {
     if (!cust.readDistro) return "";
     if (!p.distro) return '<i class="dd" data-tip="No distro yet for PO ' + esc(p.po) + '"></i>';
@@ -1131,7 +1138,7 @@ function recapTable(b, rc, fl, master){
     '<th rowspan="3" class="lab n">Total units</th><th rowspan="3" class="lab n">Ext cost</th><th rowspan="3" class="lab">Notes</th></tr><tr class="h1">' +
     rc.windows.map(w => w.banners.map((x, j) => '<th class="t' + w.tone + (j ? "" : " wst") + '" colspan="' + x.pos.length + '">' + esc(x.banner) + "</th>").join("")).join("") + '</tr><tr class="h2">' +
     cols.map(p => '<th class="' + tone(p) + '"><label><input type="checkbox" data-act="pick" data-po="' + esc(p.po) + '" aria-label="Tick PO ' + esc(p.po) + ' to move it"' + (S.pick.has(p.po) ? " checked" : "") + ">" +
-      (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</label>" + dot(p) + "</th>").join("") + "</tr></thead><tbody>";
+      (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener" title="Open PO ' + esc(p.po) + '">' + esc(p.po) + "</a>" : esc(p.po)) + "</label>" + dot(p) + tk(p) + "</th>").join("") + "</tr></thead><tbody>";
   for (const r of rc.rows){
     const f = flagged.get(r.style), odd = r.varies.cost || r.varies.desc;
     // a style whose cost or description isn't the same on every PO: its cells go red, each with what its PO says
@@ -1163,10 +1170,11 @@ function packTd(r, master, field){
   return '<td class="fz c-pack n' + (pk.bad ? " bad" : "") + '" data-tip="' + esc(tip.join("\n")) + '">' + esc(r.packs.join(" / ")) + "</td>";
 }
 const distroLink = (b, p) => S.driveWeb ? S.driveWeb + "/" + encPath(distroPath(b.id, p)) : "";
+const tkCell = p => '<span class="' + (p.ticketing ? "tk-t" : "muted") + '">' + esc(R.ticketText(p)) + "</span>";
 function poTable(b, rc){
   const cu = R.customer(b.customer) || {}, L = R.labelOf(b.customer), hasD = !!cu.readDistro, buyer = cu.buyer !== false;
   const ver = p => p.version ? "v" + esc(p.version) + (p.revised ? ' <span class="muted">(was ' + (p.revised.from ? "v" + esc(p.revised.from) : "unnumbered") + ")</span>" : "") : "";
-  return '<table class="t"><thead><tr><th>PO</th><th>' + esc(L.banner) + "</th><th>" + (cu.ref === false ? "Version" : "Reference") + '</th><th>Ordered</th><th>Start ship</th><th>Cancel</th><th>FOB point</th>' +
+  return '<table class="t"><thead><tr><th>PO</th><th>' + esc(L.banner) + "</th><th>" + (cu.ref === false ? "Version" : "Reference") + '</th><th>Ordered</th><th>Start ship</th><th>Cancel</th><th>FOB point</th>' + (cu.ticketing ? "<th>Ticketing</th>" : "") +
     (buyer ? "<th>Buyer</th>" : "") + '<th class="n">Lines</th><th class="n">Units</th><th class="n">Cost</th>' + (hasD ? "<th>Distro</th>" : "") + "<th>Original</th>" +
     (isAdmin() ? "<th></th>" : "") + "</tr></thead><tbody>" +
     rc.pos.map(p => {
@@ -1175,7 +1183,7 @@ function poTable(b, rc){
       const n = p.distro ? R.distroIssues(p).length : 0;
       const dist = !p.distro ? '<span class="muted">not yet</span>' : '<span class="' + (n ? "bad-t" : "ok-t") + '">' + (p.distro.version ? "v" + esc(p.distro.version) : "in") + (n ? " · " + n + " to look at" : " ✓") + "</span>";
       return "<tr><td>" + esc(p.po) + "</td><td>" + esc(p.banner) + "</td><td>" + (cu.ref === false ? ver(p) : esc(p.ref)) + "</td><td>" + R.mdy(p.orderDate) + "</td><td>" + swatch(rc.tones[p.po]) + R.mdy(p.startShip) + "</td><td>" + R.mdy(p.cancel) +
-        "</td><td" + (fobBad ? ' class="bad" data-tip="FOB point isn\'t ' + esc(cu.fobRule) + '"' : "") + ">" + fob + "</td>" + (buyer ? "<td>" + esc(p.buyer) + "</td>" : "") + '<td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td>" + (hasD ? "<td>" + dist + "</td>" : "") + "<td>" +
+        "</td><td" + (fobBad ? ' class="bad" data-tip="FOB point isn\'t ' + esc(cu.fobRule) + '"' : "") + ">" + fob + "</td>" + (cu.ticketing ? "<td>" + tkCell(p) + "</td>" : "") + (buyer ? "<td>" + esc(p.buyer) + "</td>" : "") + '<td class="n">' + p.lines.length + '</td><td class="n">' + R.fmt(rc.poUnits[p.po]) + '</td><td class="n">' + R.money(rc.poExt[p.po]) + "</td>" + (hasD ? "<td>" + dist + "</td>" : "") + "<td>" +
         (pdfLink(b, p) ? '<a href="' + esc(pdfLink(b, p)) + '" target="_blank" rel="noopener">' + esc(baseName((p.file && p.file.name) || p.po + ".pdf")) + "</a>" : "") + "</td>" +
         (isAdmin() ? '<td><button class="icon" data-act="rmPo" data-po="' + esc(p.po) + '" title="Remove PO ' + esc(p.po) + ' from this buy" aria-label="Remove PO ' + esc(p.po) + '">✕</button></td>' : "") + "</tr>";
     }).join("") +
@@ -1222,29 +1230,39 @@ function distroCard(b, rc, master){
   return h + "</section>";
 }
 
-/* POs saved before FOB point was read: read it from their PDFs in SharePoint, and fill in only that */
+/* POs saved before FOB point (or a customer's ticketing) was read: read them from their PDFs in SharePoint, and fill
+   in only those */
 async function readFobFromPdfs(){
   const b = S.buy;
   if (!b || S.task) return;
-  const need = b.pos.filter(p => !("fob" in p));
-  const task = S.task = { what:"Reading FOB point", cancelled:false };
+  const tk = !!(R.customer(b.customer) || {}).ticketing;
+  const need = b.pos.filter(p => !("fob" in p) || (tk && !("ticketing" in p)));
+  const task = S.task = { what:"Reading their PDFs again", cancelled:false };
   paintTask(); renderBuy();
-  const got = {};
+  const got = {}, bad = [];
   try {
     for (const [i, p] of need.entries()){
       if (task.cancelled) throw CANCELLED;
-      task.what = "Reading FOB point from PO " + p.po + " (" + (i + 1) + " of " + need.length + ")"; paintTask();
+      task.what = "Reading PO " + p.po + " again (" + (i + 1) + " of " + need.length + ")"; paintTask();
       const r = R.read(b.customer, await pdfPages(await downloadBytes(pdfPath(b.id, p)), task));
       const one = R.posOf(r).find(x => x.po === p.po);
-      got[p.po] = one ? one.fob : null;
+      // a PDF that can't be read gives no FOB point, as before, and leaves its ticketing unread
+      got[p.po] = one ? Object.assign({ fob:one.fob }, "ticketing" in one ? { ticketing:one.ticketing } : {}) : { fob:null };
+      if (!one) bad.push(p.po);
     }
     task.noCancel = true; task.what = "Saving"; paintTask();
-    await mutateBuy(b.id, d => { for (const p of d.pos) if (p.po in got && !("fob" in p)) p.fob = got[p.po]; });
+    await mutateBuy(b.id, d => {
+      for (const p of d.pos) if (p.po in got){
+        const g = got[p.po];
+        if (!("fob" in p)) p.fob = g.fob;
+        if (tk && !("ticketing" in p) && "ticketing" in g) p.ticketing = g.ticketing;
+      }
+    });
     if (S.task === task) S.task = null;
-    setSave("FOB point read for " + need.length + " PO" + (need.length > 1 ? "s" : ""));
+    setSave("Read again for " + need.length + " PO" + (need.length > 1 ? "s" : "") + (bad.length ? "; PO " + bad.join(", ") + " couldn't be read: " + "check " + (bad.length > 1 ? "their" : "its") + " PDF" : ""), bad.length > 0);
   } catch(e){
     if (S.task === task) S.task = null;
-    if (e !== CANCELLED) setSave("FOB point not read: " + errMsg(e), true);
+    if (e !== CANCELLED) setSave("Not read again: " + errMsg(e), true);
   }
   if (S.view === "buy" && S.buy && S.buy.id === b.id) renderBuy();
 }
@@ -1597,7 +1615,7 @@ async function start(){
   if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
   if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
   if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
-  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !R.readBurlington || !R.posOf || !R.COPY_V || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
+  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !R.readBurlington || !R.posOf || !R.COPY_V || !R.ticketText || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
   msalApp = new msal.PublicClientApplication({
     auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },

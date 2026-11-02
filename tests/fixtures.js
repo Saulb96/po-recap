@@ -178,7 +178,8 @@ function marmaxxDistroTJ(o) {
 // page, under each page's vendor heading), and the packing instructions. o: { pos: [{ po, lines: [{ style, desc, color,
 // cost, per, qty, sizes: [{ size, qty }], prepack }] }], version, order, start, cancel (DD-MON-YY), dept, fob, dc,
 // cover (the PO numbers page 1 lists, if not every PO's), relUnits, relCost (what page 1 says, if not the sum),
-// versions: { page n: its own version }, noVersion, badSum (a block whose summing-up line is a cent out) }
+// versions: { page n: its own version }, noVersion, badSum (a block whose summing-up line is a cent out), ticketing (what the
+// details sheet asks for; null for no ticketing line) }
 const BDC = { name: 'ZZ Sample (SMP) DC', street: '1 SAMPLE WAY', city: 'SAMPLETOWN', state: 'CA', zip: '90000' };
 const usd = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function burlingtonPO(o) {
@@ -218,7 +219,7 @@ function burlingtonPO(o) {
     it(dc.street, 268, 610),
     it('Start Ship Date', 31, 594), it('Ship Cancel Date', 153, 594), it(dc.city, 269, 594), it(dc.state, 410, 594), it(dc.zip, 459, 594),
     it(start, 37, 574), it(cancel, 157, 574),
-    it('Ticketing Instructions:', 30, 542), it('must preticket', 148, 542),
+    ...(o.ticketing === null ? [] : [it('Ticketing Instructions:', 30, 542), it(o.ticketing || 'must preticket', 148, 542)]),
     it('THIS SHEET COVERS DETAILS FOR THE FOLLOWING PURCHASE ORDER(s):', 27, 507),
     ...cover.map((n, i) => it(n, 31 + 73 * i, 490)),
     it('Terms', 237, 458), it('Payment:', 29, 435), it('NET 10EOM +30 days', 83, 435),

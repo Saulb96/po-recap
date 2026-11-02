@@ -452,6 +452,9 @@
     if (!dCover || dCover.slice().sort().join() !== cover.slice().sort().join())
       return fail(`The details sheet is for PO ${words(dCover || [])}, but page 1 is for PO ${words(cover)}.`, no);
     const dRelUnits = after(drs, /^Total Rel Units:?$/, int);
+    // the ticketing the details sheet asks for ("must preticket"), as printed; '' when it has no ticketing line
+    const TK = /^Ticketing Instructions:?\s*/i, tkRow = drs.find(r => r.items.some(i => TK.test(i.s)));
+    const ticketing = tkRow ? tkRow.items.slice(tkRow.items.findIndex(i => TK.test(i.s))).map(i => i.s).join(' ').replace(TK, '').replace(/\s+/g, ' ').trim() : '';
     if (dRelUnits != null && dRelUnits !== relUnits) return fail(`The details sheet says ${fmt(dRelUnits)} units, but page 1 says ${fmt(relUnits)}.`, no);
     const destLabel = pages[di].items.find(i => i.s === 'Destination');
     const dest = destLabel ? drs.filter(r => r.y < destLabel.y - 2 && r.y >= destLabel.y - 80)
@@ -548,7 +551,7 @@
     const fob = fobTerm ? Object.assign({ term: fobTerm, city: '', state: '' }, fobTerm === 'DESTINATION' ? { to: dc.name, city: dc.city, state: dc.state } : {})
       : fobRow ? { term: '', city: '', state: '' } : null;
     return { pos: cover.map(n => ({ po: n, banner: dc.name, dc, dept, ref: '', buyer: '', orderDate: order, startShip: start, cancel,
-      fob, version, release, totalUnits: pos.get(n).reduce((t, l) => t + l.units, 0), lines: pos.get(n) })) };
+      fob, ticketing, version, release, totalUnits: pos.get(n).reduce((t, l) => t + l.units, 0), lines: pos.get(n) })) };
   }
 
   /* ============================== customers ============================== */
@@ -563,10 +566,12 @@
       fobOK: f => fobIsLA(f), fobRule: 'LA', packField: 'master', ref: true, buyer: true,
       label: { banner: 'Banner', banners: 'banners', pack: 'Pack', packs: 'Case packs', packWord: 'case pack' } },
     { key: 'burlington', name: 'Burlington', read: readBurlington, banners: [], pairs: false,
-      fobOK: f => !f || f.term === 'DESTINATION' || fobIsLA(f), fobRule: 'Destination or LA', packField: 'inner', ref: false, buyer: false,
+      fobOK: f => !f || f.term === 'DESTINATION' || fobIsLA(f), fobRule: 'Destination or LA', packField: 'inner', ref: false, buyer: false, ticketing: true,
       label: { banner: 'DC', banners: 'DCs', pack: 'Prepack', packs: 'Prepacks', packWord: 'prepack' } },
   ];
   const customer = key => CUSTOMERS.find(c => c.key === key) || null;
+  // a PO's ticketing as the page and the sheet say it: what it asks for, no ticketing, or not read (saved before it was)
+  const ticketText = p => !p || !('ticketing' in p) ? 'not read' : p.ticketing ? p.ticketing.charAt(0).toUpperCase() + p.ticketing.slice(1).toLowerCase() : 'No ticketing';
   const LABEL = CUSTOMERS[0].label;
   const labelOf = key => (customer(key) || {}).label || LABEL;
 
@@ -1107,6 +1112,12 @@
     ].concat(cu.buyer === false && !S.buyers.length ? [] : [['Buyer', S.buyers.join(', ')]], [['Dept', S.depts.join(', ')]]);
     const versions = [...new Set(R.pos.map(p => p.version).filter(Boolean))].sort((a, b) => a - b);
     if (versions.length) facts.push(['PO version', versions.join(', ')]);
+    if (cu.ticketing) {
+      const by = new Map();
+      for (const p of R.pos) { const k = ticketText(p); by.set(k, (by.get(k) || []).concat(p.po)); }
+      const last = k => k === 'No ticketing' ? 1 : k === 'not read' ? 2 : 0;   // what's asked for first
+      facts.push(['Ticketing', [...by].sort((x, y) => last(x[0]) - last(y[0])).map(([k, list]) => k + ': ' + list.sort(byNo).join(', ')).join('; ')]);
+    }
     if (opts.packNote) facts.push([L.packs, opts.packNote, opts.packChecked ? ST.value : ST.flagged]);
     let r = 2;
     for (const [k, v, s] of facts) { put(r, C.style, k, ST.label); put(r, C.desc, v, s || ST.value); r++; }
@@ -1164,6 +1175,11 @@
     put(r, C.check, '', ST.totalLabel); put(r, C.style, 'Total', ST.totalLabel); put(r, C.desc, '', ST.totalLabel); put(r, C.cost, '', ST.totalLabel); put(r, C.pack, '', ST.totalLabel);
     cols.forEach((po, i) => put(r, C.po0 + i, R.poUnits[po], tint(ST.totalUnits, R.tones[po])));
     put(r, C.total, R.total.units, ST.totalUnits); put(r, C.ext, R.total.ext, ST.totalMoney); put(r, C.notes, '', ST.totalLabel);
+    if (cu.ticketing) {
+      r++;
+      put(r, C.style, 'Ticketing', ST.label);
+      cols.forEach((po, i) => { const p = R.pos.find(x => x.po === po); put(r, C.po0 + i, ticketText(p), p.ticketing ? tint(ST.wrap, R.tones[po], true) : ST.wrap); });
+    }
     r += 3;
 
     // flags
@@ -1258,7 +1274,7 @@
     return s;
   }
 
-  return { CUSTOMERS, TONES, COPY_V, customer, labelOf, read, readSheet, readMarmaxx, readMarmaxxDistro, readDistroSheet, readBurlington, posOf, isDistroPages, rows, checkBatch,
+  return { CUSTOMERS, TONES, COPY_V, customer, labelOf, ticketText, read, readSheet, readMarmaxx, readMarmaxxDistro, readDistroSheet, readBurlington, posOf, isDistroPages, rows, checkBatch,
            flags, distroIssues, parseMaster, masterPack, masterSays, compactMaster, expandMaster, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig, dmy,
            recap, cellText, cellTip, variantsTip, worksheet, distroSheet, sheetName, defaultName,
            int, num, iso, md, mdy, fmt, money, words, colName };
