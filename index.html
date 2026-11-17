@@ -234,8 +234,8 @@ details.dist .tw{padding:0 16px 12px}
 <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
-<script src="recap.js?v=20261102a"></script>
-<script src="mail.js?v=20261102a"></script>
+<script src="recap.js?v=20261117a"></script>
+<script src="mail.js?v=20261117a"></script>
 <script>
 "use strict";
 /* ============================== CONFIG ============================== */
@@ -264,6 +264,10 @@ const PATHS = {
   pdf  : (id, po, v) => CFG.root + "/Buys/" + id + "/" + po + (v ? "-v" + v : "") + ".pdf",
   // a distro's file carries its version, so a newer one never overwrites the one in use before it's saved
   distro: (id, po, v, ext) => CFG.root + "/Buys/" + id + "/" + po + "-distro-v" + (v || 0) + "." + (ext || "pdf"),
+  // distros that came before their PO: the list, and each file under its customer, named as it will be in a buy
+  waiting : CFG.root + "/Waiting/waiting.json",
+  waitDir : cust => CFG.root + "/Waiting/" + cust,
+  waitFile: (cust, po, v, ext) => CFG.root + "/Waiting/" + cust + "/" + po + "-distro-v" + (v || 0) + "." + (ext || "pdf"),
   packs: CFG.root + "/Master/case-packs.json"   // the saved copy of Master Sheet Live's case packs, for everyone
 };
 const distroPath = (id, p) => PATHS.distro(id, p.po, p.distro.version, p.distro.file && p.distro.file.ext);
@@ -271,6 +275,8 @@ const pdfPath = (id, p) => PATHS.pdf(id, p.po, p.version);
 const extOf = name => { const m = /\.([a-z0-9]{2,5})$/i.exec(String(name || "")); return m ? m[1].toLowerCase() : ""; };
 const R = window.Recap;
 const $ = s => document.querySelector(s);
+const up1 = s => s.charAt(0).toUpperCase() + s.slice(1);
+const mimeOf = ext => ext === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const encPath = p => p.split("/").map(encodeURIComponent).join("/");
 const errMsg = e => (e && e.message) || String(e);
@@ -310,6 +316,7 @@ const S = {
   base:new Map(), timers:new Map(), chain:Promise.resolve(),
   pick:new Set(),             // POs ticked at the top of the recap, to move to another buy
   master:null,                // Master Sheet Live: { data, at } once read, { error } if it couldn't be, { loading }
+  waiting:null,               // distros waiting for their PO: { v, distros:[entry] }, newest read of waiting.json
   task:null                   // a buy-page task in progress (reading FOB, moving POs): { what, cancelled }
 };
 
@@ -470,6 +477,80 @@ async function updateIndex(fn){
   throw new Error("The buys list kept changing while it was being saved. Reload the page.");
 }
 const putEntry = b => ix => { ix.buys = ix.buys.filter(x => x.id !== b.id); ix.buys.push(entryOf(b)); };
+
+/* ============================== DISTROS WAITING FOR THEIR PO (Waiting/waiting.json) ============================== */
+// A distro dropped before its PO is kept in Waiting/<customer>/ and listed in waiting.json until its PO is saved into a
+// buy; then it goes onto that PO as a distro dropped on the buy would. One entry per customer and PO, the newest version:
+// { customer, po, distro, file:{ name, ext, path }, added, addedBy }.
+const normWaiting = d => ({ v:1, distros:(d && Array.isArray(d.distros)) ? d.distros : [] });
+async function loadWaiting(){ const got = await readJson(PATHS.waiting); S.waiting = normWaiting(got && got.data); return S.waiting; }
+/* Read, change, write with If-Match; a 412 reads it again and makes the change again */
+async function updateWaiting(fn){
+  for (let n = 0; n < 5; n++){
+    const cur = await readJson(PATHS.waiting);
+    const data = normWaiting(cur && cur.data);
+    fn(data);
+    try { await writeJson(PATHS.waiting, data, cur && cur.etag); S.waiting = data; return data; }
+    catch(e){ if (e.status !== 412) throw e; }
+  }
+  throw new Error("The list of waiting distros kept changing while it was being saved. Reload the page.");
+}
+const waitingFor = (key, pos) => (S.waiting ? S.waiting.distros : []).filter(w => w.customer === key && (!pos || pos.includes(w.po)));
+const sameWait = (a, b) => a.customer === b.customer && a.po === b.po && a.file.path === b.file.path;
+/* A distro off the waiting list, its file to the recycle bin */
+async function unwait(entry){
+  await updateWaiting(w => { w.distros = w.distros.filter(x => !sameWait(x, entry)); });
+  await delItem(entry.file.path);
+}
+/* A waiting distro onto its PO in a buy, as a distro dropped on that buy would go: onto a PO without one, or in place of
+   an older version. A copy of the distro the PO has, or an older version, comes off the waiting list (its file to the
+   recycle bin); a different distro with the same version stays waiting, saying why. Gives { po, did, why }: did is
+   false when it's still waiting. */
+async function attachWaiting(entry, buyId){
+  const said = (did, why) => ({ po:entry.po, did, why });
+  const tv = entry.distro.version || 0, vName = v => v ? "version " + v : "the unnumbered one";
+  const verdict = d => {
+    const p = d && d.pos.find(x => x.po === entry.po);
+    if (!p) return "gone";
+    if (!p.distro) return "attach";
+    const hv = p.distro.version || 0;
+    return tv > hv ? "replace" : tv < hv ? "older" : R.sameDistro(p.distro, entry.distro) ? "copy" : "different";
+  };
+  const got = await readJson(PATHS.buy(buyId));
+  const v = verdict(got && got.data);
+  if (v === "gone") return said(false, "the distro waiting for PO " + entry.po + " stays waiting: the PO isn't in that buy");
+  if (v === "different") return said(false, "the distro waiting for PO " + entry.po + " stays waiting: the PO already has a different distro with the same version (" + (tv || "unnumbered") + "); remove whichever is wrong");
+  if (v === "older" || v === "copy"){
+    await unwait(entry);
+    return said(true, v === "copy" ? "PO " + entry.po + " already had the distro that was waiting for it, so the waiting copy is removed"
+                                    : "PO " + entry.po + " already has a newer distro, so the waiting " + vName(tv) + " is removed");
+  }
+  // the file moves into the buy's folder, then the buy takes it; if the PO changed in the buy meanwhile, it moves back
+  const to = PATHS.distro(buyId, entry.po, tv, entry.file.ext);
+  try { await moveItem(entry.file.path, PATHS.dir(buyId)); }
+  catch(e){
+    if (e.status !== 404) throw e;
+    return said(false, "the distro waiting for PO " + entry.po + " wasn't put on it: its file isn't in the waiting folder any more");
+  }
+  let prev = null, buy;
+  try {
+    buy = await mutateBuy(buyId, d => {
+      const w = verdict(d);
+      if (w !== "attach" && w !== "replace") throw Object.assign(new Error("PO " + entry.po + " changed in that buy meanwhile"), { changed:true });
+      const p = d.pos.find(x => x.po === entry.po);
+      prev = p.distro ? distroPath(buyId, p) : null;
+      p.distro = Object.assign({}, entry.distro, { file:{ name:entry.file.name, ext:entry.file.ext }, added:entry.added, addedBy:entry.addedBy, attached:new Date().toISOString(), attachedBy:me() });
+    });
+  } catch(e){
+    await moveItem(to, PATHS.waitDir(entry.customer)).catch(x => console.error(x));
+    if (e.changed) return said(false, "the distro waiting for PO " + entry.po + " stays waiting: " + e.message);
+    throw e;
+  }
+  if (prev && prev !== to) await delItem(prev).catch(e => console.error(e));
+  await updateWaiting(w => { w.distros = w.distros.filter(x => !sameWait(x, entry)); });
+  await updateIndex(putEntry(buy)).catch(e => console.error(e));
+  return said(true, "the distro that was waiting for PO " + entry.po + " (" + vName(tv) + ") is on it now");
+}
 
 /* ============================== A BUY FILE ============================== */
 function setBuy(data, etag){ S.buy = data; S.buyTag = etag; }
@@ -635,6 +716,7 @@ function dropJob(){ if (S.job){ S.job.cancelled = true; S.job = null; } }
 async function recheck(job){
   if (job.kind === "add" && !S.buy) throw CANCELLED;
   await loadIndex();
+  await loadWaiting();
   if (job.kind === "add"){
     // this buy as it is now, so a PO someone else just added, took out or brought up to date is checked against
     // (S.buy takes it only if nothing was saved from this page while it was being read, a note say)
@@ -649,7 +731,7 @@ async function recheck(job){
   const others = S.index.buys.filter(b => !(cur && b.id === cur.id));
   const has = {};
   if (cur) for (const p of cur.pos) if (p.distro) has[p.po] = p.distro;
-  job.chk = R.checkBatch(job.results, here, others, has);
+  job.chk = R.checkBatch(job.results, here, others, has, waitingFor(job.key));
   // what wasn't read, said once each
   if (job.skipped.length) job.chk.notes.push(job.skipped.length + " file" + (job.skipped.length > 1 ? "s" : "") + " skipped: not a PDF, an email or an Excel distro (" +
     job.skipped.slice(0, 6).join(", ") + (job.skipped.length > 6 ? " and " + (job.skipped.length - 6) + " more" : "") + ").");
@@ -657,7 +739,7 @@ async function recheck(job){
 }
 function endJob(){ S.job = null; renderJob(); syncDrop(); }
 
-const jobCount = job => job.chk ? job.chk.accepted.length + job.chk.distros.length : 0;
+const jobCount = job => job.chk ? job.chk.accepted.length + job.chk.distros.length + (job.chk.held || []).length : 0;
 async function saveJob(){
   const job = S.job;
   if (!job || job.phase !== "check" || !jobCount(job)) return;
@@ -667,7 +749,8 @@ async function saveJob(){
   }
   if (S.task){ job.failed = "Wait for “" + S.task.what + "” to finish, then save."; renderJob(); return; }
   job.phase = "saving"; job.at = 0; job.failed = null; job.uploaded = []; renderJob();
-  const sig = c => c.accepted.map(p => p.po + ":" + (p.version || 0) + ":" + (p.replaces == null ? "" : p.replaces)).join() + "|" + c.distros.map(d => d.po + ":" + (d.distro.version || 0)).join();
+  const sig = c => c.accepted.map(p => p.po + ":" + (p.version || 0) + ":" + (p.replaces == null ? "" : p.replaces)).join() + "|" + c.distros.map(d => d.po + ":" + (d.distro.version || 0)).join() +
+    "|" + (c.held || []).map(d => d.po + ":" + (d.distro.version || 0)).join();
   const before = sig(job.chk);
   try {
     await recheck(job);
@@ -675,9 +758,12 @@ async function saveJob(){
       job.phase = "check"; job.failed = "The buys list changed while you were looking: the checks have been run again. Look them over, then save.";
       renderJob(); return;
     }
-    const id = job.kind === "new" ? newId() : S.buy.id;
+    // only distros waiting for their POs: no buy is made or changed
+    const onlyHeld = !job.chk.accepted.length && !job.chk.distros.length;
+    const id = onlyHeld ? null : job.kind === "new" ? newId() : S.buy.id;
     job.buyId = id;
-    await ensurePath(PATHS.dir(id));
+    if (id) await ensurePath(PATHS.dir(id));
+    if (job.chk.held.length) await ensurePath(PATHS.waitDir(job.key));
     const up = async (path, blob, type) => { if (job.cancelled) throw CANCELLED; job.at++; renderJob(); const it = await uploadPdf(path, blob, type); job.uploaded.push(path); return it; };
     // one copy of the file for each PO it covers (a Burlington release can cover several), so moving or removing one
     // PO never touches another's
@@ -691,8 +777,15 @@ async function saveJob(){
     const distros = [];
     for (const d of job.chk.distros){
       const ext = extOf(d.file) || "pdf";
-      await up(PATHS.distro(id, d.po, d.distro.version, ext), job.files.get(d.file), ext === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      await up(PATHS.distro(id, d.po, d.distro.version, ext), job.files.get(d.file), mimeOf(ext));
       distros.push(Object.assign({}, d.distro, { file:{ name:d.file, ext }, added:new Date().toISOString(), addedBy:me() }));
+    }
+    // distros whose PO hasn't come: into the waiting folder now, onto the waiting list once nothing can be cancelled
+    const holding = [];
+    for (const d of job.chk.held){
+      const ext = extOf(d.file) || "pdf", path = PATHS.waitFile(job.key, d.po, d.distro.version, ext);
+      await up(path, job.files.get(d.file), mimeOf(ext));
+      holding.push({ customer:job.key, po:d.po, distro:d.distro, file:{ name:d.file, ext, path }, added:new Date().toISOString(), addedBy:me() });
     }
     if (job.cancelled) throw CANCELLED;
     // a distro goes on its PO (the check above decided it may), unless the buy as saved now no longer has that PO or
@@ -707,8 +800,9 @@ async function saveJob(){
       }
       return { replaced, lost };
     };
-    let buy, out = { replaced:[], lost:[] }, swapped = [], lostPo = [];
-    if (job.kind === "new"){
+    let buy = null, out = { replaced:[], lost:[] }, swapped = [], lostPo = [];
+    if (onlyHeld){}
+    else if (job.kind === "new"){
       const now = new Date().toISOString();
       out = attach(saved);
       buy = { v:1, id, name:job.name, customer:job.key, created:now, by:me(), updated:now, updatedBy:me(), pos:saved, notes:{} };
@@ -731,26 +825,65 @@ async function saveJob(){
       });
     }
     // files the saved buy no longer points to: an older version's PDF, an older distro, uploads that found no place
-    const refd = new Set(buy.pos.flatMap(p => [pdfPath(id, p)].concat(p.distro ? [distroPath(id, p)] : [])));
-    const drop = path => refd.has(path) ? null : delItem(path).catch(e => console.error(e));
-    for (const x of swapped) await drop(x.path);
-    for (const p of lostPo) await drop(pdfPath(id, p));
-    for (const path of out.replaced) if (!job.uploaded.includes(path)) await drop(path);
-    for (const d of out.lost) await drop(PATHS.distro(id, d.po, d.version, d.file.ext));
+    if (buy){
+      const refd = new Set(buy.pos.flatMap(p => [pdfPath(id, p)].concat(p.distro ? [distroPath(id, p)] : [])));
+      const drop = path => refd.has(path) ? null : delItem(path).catch(e => console.error(e));
+      for (const x of swapped) await drop(x.path);
+      for (const p of lostPo) await drop(pdfPath(id, p));
+      for (const path of out.replaced) if (!job.uploaded.includes(path)) await drop(path);
+      for (const d of out.lost) await drop(PATHS.distro(id, d.po, d.version, d.file.ext));
+    }
     S.job = null;
     const miss = [], info = swapped.map(x => "PO " + x.po + " is now version " + x.to + " (was " + (x.from ? "version " + x.from : "unnumbered") + ")");
     if (lostPo.length) miss.push("not PO " + lostPo.map(p => p.po).join(", ") + ": someone else saved " + (lostPo.length > 1 ? "them" : "it") + " in this buy, or took " + (lostPo.length > 1 ? "them" : "it") + " out of it, meanwhile");
     if (out.lost.length) miss.push("not the distro for " + out.lost.map(d => d.po).join(", ") + ": someone else removed the PO or saved a newer distro meanwhile");
-    try { await updateIndex(putEntry(buy)); }
-    catch(e){ miss.push("the buys list wasn't brought up to date (" + errMsg(e) + "): reload the page"); }
-    setSave("Saved" + (miss.length ? ", but " + miss.join("; ") : "") + (info.length ? ". " + info.join("; ") : "") + (miss.length || info.length ? "." : ""), miss.length > 0);
-    if (job.kind === "new") location.hash = "#/buy/" + id;
+    // the held distros onto the waiting list; one whose PO someone kept a newer distro waiting for meanwhile isn't
+    if (holding.length){
+      try {
+        let old = [], late = [];
+        await updateWaiting(w => {
+          old = []; late = [];
+          for (const k of holding){
+            const i = w.distros.findIndex(x => x.customer === k.customer && x.po === k.po);
+            if (i < 0){ w.distros.push(k); continue; }
+            const cur = w.distros[i], cv = cur.distro.version || 0, kv = k.distro.version || 0;
+            if (cur.file.path === k.file.path || kv > cv || (kv === cv && R.sameDistro(cur.distro, k.distro) && R.richer(k.distro, cur.distro))){
+              if (cur.file.path !== k.file.path) old.push(cur.file.path);
+              w.distros[i] = k;
+            } else late.push(k);
+          }
+        });
+        for (const path of old) await delItem(path).catch(e => console.error(e));
+        for (const k of late) await delItem(k.file.path).catch(e => console.error(e));
+        const kept = holding.filter(k => !late.includes(k)).map(k => k.po);
+        if (kept.length) info.push("the distro" + (kept.length > 1 ? "s" : "") + " for " + kept.join(", ") + " will wait for " + (kept.length > 1 ? "their POs" : "its PO"));
+        if (late.length) miss.push("not the distro for " + late.map(k => k.po).join(", ") + ": a newer one was made to wait meanwhile");
+      } catch(e){ miss.push("the distros for " + holding.map(k => k.po).join(", ") + " aren't waiting for their POs (" + errMsg(e) + ")"); }
+    }
+    if (buy){
+      try { await updateIndex(putEntry(buy)); }
+      catch(e){ miss.push("the buys list wasn't brought up to date (" + errMsg(e) + "): reload the page"); }
+      // distros that came before the POs saved now go onto them
+      const fresh = saved.map(p => p.po).filter(po => buy.pos.some(p => p.po === po) && !lostPo.some(p => p.po === po));
+      for (const w of waitingFor(job.key, fresh)){
+        try { const r = await attachWaiting(w, id); (r.did ? info : miss).push(r.why); }
+        catch(e){ miss.push("the distro waiting for PO " + w.po + " wasn't put on it (" + errMsg(e) + ")"); }
+      }
+    }
+    setSave((buy ? "Saved" : "Kept") + (miss.length ? ", but " + miss.join("; ") : "") + (info.length ? ". " + up1(info.join("; ")) : "") + (miss.length || info.length ? "." : ""), miss.length > 0);
+    if (!buy){ if (job.kind === "new"){ renderJob(); renderWaiting(); } else { S.adding = false; renderBuy(); } }
+    else if (job.kind === "new") location.hash = "#/buy/" + id;
     else { S.adding = false; renderBuy(); loadMaster(); }   // new styles may need the case-pack copy brought up to date
   } catch(e){
     if (e === CANCELLED){
-      // a new buy's files go; on an existing buy only the files this save uploaded (none is in the buy yet)
+      // a new buy's files go; on an existing buy only the files this save uploaded (none is in the buy yet); and the
+      // files of distros that were to wait (none is on the waiting list yet)
       try {
-        if (job.kind === "new"){ if (job.newId) await delItem(PATHS.dir(job.newId)); }
+        if (job.kind === "new"){
+          if (job.newId) await delItem(PATHS.dir(job.newId));
+          for (const path of job.uploaded || []) if (path.indexOf(CFG.root + "/Waiting/") === 0) await delItem(path);
+        }
+        else if (!job.buyId){ for (const path of job.uploaded || []) await delItem(path); }
         else if ((job.uploaded || []).length){
           const got = await readJson(PATHS.buy(job.buyId));
           const refd = new Set(got ? got.data.pos.flatMap(p => [pdfPath(job.buyId, p)].concat(p.distro ? [distroPath(job.buyId, p)] : [])) : []);
@@ -783,26 +916,37 @@ function renderJob(){
     box.innerHTML = '<div class="strip busy"><div class="spin"></div><span>' + what + '…</span><div class="spacer"></div><button class="btn sm" data-act="cancelJob">Cancel</button></div>';
     return;
   }
-  const chk = job.chk || { accepted:[], refused:[], notes:[], distros:[] };
-  const acc = chk.accepted, dis = chk.distros;
-  // the buy as it would be: its POs, the new ones, and each distro on its PO
-  const pos = (job.kind === "add" ? S.buy.pos.filter(p => !acc.some(a => a.po === p.po)) : []).concat(acc).map(p => { const d = dis.find(x => x.po === p.po); return d ? Object.assign({}, p, { distro:d.distro }) : p; });
+  const chk = job.chk || { accepted:[], refused:[], notes:[], distros:[], held:[] };
+  const acc = chk.accepted, dis = chk.distros, held = chk.held || [];
+  // distros already waiting for POs being saved now: they go onto them once the POs are in
+  const waits = waitingFor(job.key, acc.map(p => p.po));
+  // the buy as it would be: its POs, the new ones, and each distro on its PO (the newer of a dropped and a waiting one)
+  const pos = (job.kind === "add" ? S.buy.pos.filter(p => !acc.some(a => a.po === p.po)) : []).concat(acc).map(p => {
+    const d = dis.find(x => x.po === p.po), w = waits.find(x => x.po === p.po);
+    const best = d && w ? ((w.distro.version || 0) > (d.distro.version || 0) ? w.distro : d.distro) : d ? d.distro : w ? w.distro : null;
+    return best ? Object.assign({}, p, { distro:best }) : p;
+  });
   const cust = R.customer(job.key) || {}, L = R.labelOf(job.key), reps = acc.filter(p => p.replaces != null).length;
   const vText = p => p.version ? "v" + p.version + (p.replaces != null ? " (replaces " + (p.replaces ? "v" + p.replaces : "the unnumbered one") + ")" : "") : "";
   const fl = acc.length || dis.length ? R.flags(job.key, pos) : [];
   const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
   let h = "";
   if (job.failed) h += '<div class="strip err">' + esc(job.failed) + "</div>";
-  if (job.kind === "new")
+  if (job.kind === "new" && acc.length)
     h += '<div class="row"><label class="fld grow"><span>Buy name</span><input id="jobName" value="' + esc(job.name) + '" maxlength="80"></label></div>';
-  if (acc.length || dis.length){
+  const dv = d => d.version ? "v" + d.version : "unnumbered";
+  if (acc.length || dis.length || held.length){
     const bits = [];
     if (acc.length){
       const rc = R.recap({ customer:job.key, pos:acc });
       bits.push("<b>" + plural(acc.length, "PO") + "</b>" + (reps ? " (" + reps + " replacing an older version)" : "") + " · " + R.fmt(rc.total.units) + " units · " + R.money(rc.total.ext) + " · " + plural(rc.windows.length, "ship window"));
     }
     if (dis.length) bits.push("<b>" + plural(dis.length, "distro") + "</b> for " + dis.map(d => esc(d.po) + (d.replaces ? " (replaces version " + esc(d.replaces) + ")" : "")).join(", "));
-    h += '<div class="strip ok"><span>Ready to ' + (job.kind === "new" ? "save" : "add") + ": " + bits.join(" · ") + "</span></div>";
+    if (waits.length) bits.push("<b>" + plural(waits.length, "waiting distro") + "</b> for " + waits.map(w => esc(w.po) + " (" + dv(w.distro) + ", waiting since " + dayOf(w.added) + ")").join(", ") +
+      " go" + (waits.length > 1 ? "" : "es") + " on once " + (waits.length > 1 ? "their POs are" : "its PO is") + " in");
+    if (held.length) bits.push("<b>" + plural(held.length, "distro") + "</b> for " + held.map(d => esc(d.po) + " (" + dv(d.distro) + (d.replaces ? ", replacing the waiting " + (d.replaces === "unnumbered" ? "unnumbered one" : "v" + esc(d.replaces)) : "") + ")").join(", ") +
+      " will wait for " + (held.length > 1 ? "their POs" : "its PO") + ": each goes onto its PO by itself when the PO is saved into a buy");
+    h += '<div class="strip ok"><span>Ready' + (acc.length || dis.length ? " to " + (job.kind === "new" ? "save" : "add") : "") + ": " + bits.join(" · ") + "</span></div>";
   } else {
     h += '<div class="strip err"><b>Nothing here can be ' + (job.kind === "new" ? "saved" : "added") + ".</b></div>";
   }
@@ -823,7 +967,10 @@ function renderJob(){
       }).join("") + "</tbody></table></div>";
   }
   const what = [acc.length - reps && plural(acc.length - reps, "PO"), reps && plural(reps, "new PO version"), dis.length && plural(dis.length, "distro")].filter(Boolean).join(" and ");
-  h += '<div class="row"><button class="btn primary" data-act="saveJob"' + (acc.length || dis.length ? "" : " disabled") + ">" + (job.kind === "new" ? "Save buy" : "Add " + (what || "nothing")) +
+  const keep = held.length ? "keep " + plural(held.length, "distro") + " waiting for " + (held.length > 1 ? "their POs" : "its PO") : "";
+  const label = job.kind === "new" ? (acc.length ? "Save buy" + (keep ? " and " + keep : "") : up1(keep || "save nothing"))
+                                   : what ? "Add " + what + (keep ? " and " + keep : "") : up1(keep || "add nothing");
+  h += '<div class="row"><button class="btn primary" data-act="saveJob"' + (acc.length || dis.length || held.length ? "" : " disabled") + ">" + esc(label) +
        '</button><button class="btn" data-act="cancelJob">Cancel</button></div>';
   box.innerHTML = h;
 }
@@ -861,13 +1008,53 @@ async function showHome(){
     '<div class="imp"><label class="fld cust"><span>Customer</span><select id="cust">' + custOptions(keep ? keep.key : LS.get("customer", "")) + "</select></label>" +
     '<div class="drop off" id="drop" tabindex="0" role="button" aria-disabled="true"><div class="arrow">↓</div><div><b>Drop POs, distros, emails or a folder here</b><span class="hint" id="dropHint"></span></div></div>' +
     '<div class="drops"><button class="btn" id="pickFolder" data-act="pickFolder" disabled>Pick a folder</button></div></div>' +
-    '<div class="job" id="job"></div></section>' +
+    '<div class="job" id="job"></div></section><div id="waitBox"></div>' +
     '<section class="card"><div class="card-hd"><h2>Buys</h2><div class="spacer"></div><select class="sm" id="filt" aria-label="Customer"><option value="">All customers</option>' +
     R.CUSTOMERS.map(c => '<option value="' + c.key + '"' + (S.filter === c.key ? " selected" : "") + ">" + esc(c.name) + "</option>").join("") + "</select>" +
     '<button class="btn sm" data-act="exportSel" id="exportSel" disabled>Export selected</button></div><div id="buysBox"><div class="inline-load"><div class="spin"></div>Loading the buys…</div></div></section>';
   renderJob(); syncDrop();
   try { await loadIndex(); renderBuys(); }
   catch(e){ $("#buysBox").innerHTML = '<div class="empty" style="color:var(--bad)">The buys couldn\'t be loaded: ' + esc(errMsg(e)) + "</div>"; }
+  try { await loadWaiting(); renderWaiting(); }
+  catch(e){ const w = $("#waitBox"); if (w) w.innerHTML = '<section class="card"><div class="empty" style="color:var(--bad)">The distros waiting for their PO couldn\'t be loaded: ' + esc(errMsg(e)) + "</div></section>"; }
+}
+/* The distros waiting for their PO, with a way to put one on its PO by hand when its PO is in a buy already (saved by a
+   page from before this list, say), and to remove one */
+function renderWaiting(){
+  const box = $("#waitBox");
+  if (!box) return;
+  const list = (S.waiting ? S.waiting.distros : []).slice()
+    .sort((a, b) => String(a.customer).localeCompare(String(b.customer)) || String(a.po).localeCompare(String(b.po), "en", { numeric:true }));
+  if (!list.length){ box.innerHTML = ""; return; }
+  const inBuy = w => (S.index ? S.index.buys : []).find(b => b.customer === w.customer && (b.pos || []).includes(w.po));
+  box.innerHTML = '<section class="card"><div class="card-hd"><h2>Distros waiting for their PO · ' + list.length + '</h2><div class="spacer"></div><span class="hint">Each goes onto its PO by itself when the PO is saved into a buy</span></div>' +
+    '<div class="tw"><table class="t"><thead><tr><th>PO</th><th>Customer</th><th>Banner</th><th>Version</th><th>Ship window</th><th class="n">Units</th><th class="n">DCs</th><th>Waiting since</th><th>File</th><th></th></tr></thead><tbody>' +
+    list.map(w => {
+      const d = w.distro, b = inBuy(w), key = ' data-po="' + esc(w.po) + '" data-cust="' + esc(w.customer) + '"';
+      const link = S.driveWeb ? S.driveWeb + "/" + encPath(w.file.path) : "";
+      return "<tr><td>" + esc(w.po) + "</td><td>" + esc((R.customer(w.customer) || { name:w.customer }).name) + "</td><td>" + esc(d.banner || "") + "</td><td>" + (d.version ? "v" + esc(d.version) : "—") + "</td><td>" +
+        (d.startShip ? R.md(d.startShip) + "–" + R.md(d.cancel) : '<span class="muted">not on it</span>') + '</td><td class="n">' + R.fmt(d.lines.reduce((t, l) => t + l.total, 0)) + '</td><td class="n">' + d.dcs.length +
+        "</td><td>" + dayOf(w.added) + " by " + esc(w.addedBy) + "</td><td>" + (link ? '<a href="' + esc(link) + '" target="_blank" rel="noopener">' + esc(baseName(w.file.name)) + "</a>" : esc(baseName(w.file.name))) + "</td><td>" +
+        (b ? '<button class="btn sm" data-act="attachWait"' + key + ' data-buy="' + esc(b.id) + '">Put on PO ' + esc(w.po) + " in “" + esc(b.name) + "”</button>" : "") +
+        (isAdmin() || w.addedBy === me() ? '<button class="icon" data-act="unwait"' + key + ' title="Remove" aria-label="Remove the distro waiting for PO ' + esc(w.po) + '">✕</button>' : "") + "</td></tr>";
+    }).join("") + "</tbody></table></div></section>";
+}
+async function attachWaitingClick(cust, po, buyId){
+  const w = waitingFor(cust, [po])[0];
+  if (!w) return;
+  setSave("Putting the distro on PO " + po + "…");
+  try { const r = await attachWaiting(w, buyId); setSave(up1(r.why) + ".", !r.did); }
+  catch(e){ setSave("Not put on PO " + po + ": " + errMsg(e), true); }
+  try { await loadWaiting(); await loadIndex(); } catch(e){ console.error(e); }
+  renderWaiting(); renderBuys();
+}
+async function unwaitClick(cust, po){
+  const w = waitingFor(cust, [po])[0];
+  if (!w) return;
+  if (!await confirmBox("Remove the distro waiting for PO " + po + "?", "Its file (" + baseName(w.file.name) + ") goes to the SharePoint recycle bin, and it won't go onto PO " + po + " when the PO comes.", "Remove")) return;
+  try { await unwait(w); setSave("Removed the distro waiting for PO " + po); }
+  catch(e){ setSave("Not removed: " + errMsg(e), true); }
+  renderWaiting();
 }
 function renderBuys(){
   const box = $("#buysBox");
@@ -1582,6 +1769,8 @@ function wire(){
       else if (a === "addClose"){ if (S.job && S.job.phase === "saving") return; dropJob(); S.adding = false; renderBuy(); }
       else if (a === "delBuy") deleteBuy();
       else if (a === "rmPo") removePo(t.dataset.po);
+      else if (a === "attachWait") attachWaitingClick(t.dataset.cust, t.dataset.po, t.dataset.buy);
+      else if (a === "unwait") unwaitClick(t.dataset.cust, t.dataset.po);
       else if (a === "pickFolder"){ if (dropTarget() && !S.job){ const f = $("#folderPick"); f.value = ""; f.click(); } }
       else if (a === "readFob") readFobFromPdfs();
       else if (a === "masterRetry") loadMaster(true);
@@ -1615,7 +1804,7 @@ async function start(){
   if (typeof msal === "undefined"){ gateMsg('<span style="color:var(--bad)">The Microsoft sign-in library didn\'t load (alcdn.msauth.net blocked?).</span>'); return; }
   if (typeof pdfjsLib === "undefined"){ gateMsg('<span style="color:var(--bad)">The PDF reader didn\'t load (cdnjs.cloudflare.com blocked?).</span>'); return; }
   if (!R){ gateMsg('<span style="color:var(--bad)">recap.js didn\'t load.</span>'); return; }
-  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !R.readBurlington || !R.posOf || !R.COPY_V || !R.ticketText || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
+  if (!R.TONES || !R.cellText || !R.readMarmaxxDistro || !R.compactMaster || !R.readBurlington || !R.posOf || !R.COPY_V || !R.ticketText || !R.sameDistro || !window.Mail){ gateMsg('<span style="color:var(--bad)">This browser kept an older copy of the page\'s files. Reload it with Ctrl+F5.</span>'); return; }
   pdfjsLib.GlobalWorkerOptions.workerSrc = CFG.pdfWorker;
   msalApp = new msal.PublicClientApplication({
     auth:{ clientId:CFG.clientId, authority:"https://login.microsoftonline.com/" + CFG.tenantId, redirectUri },

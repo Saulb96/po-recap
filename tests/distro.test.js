@@ -118,7 +118,7 @@ test('an Excel distribution sheet: the PO number and banner from its file name, 
 const d = (o, file) => Object.assign({ file: file || 'distro.pdf' }, distro(o));
 const p = (o, file) => Object.assign({ file: file || 'po.pdf' }, po(o));
 
-test('a distro attaches to its PO, dropped with it or already in the buy; otherwise it is refused by name', () => {
+test('a distro attaches to its PO, dropped with it or already in the buy; its PO in another buy, it is refused by name; otherwise it waits', () => {
   let c = Recap.checkBatch([p({}, 'po.pdf'), d({}, 'd.pdf')], [], [], {});
   assert.deepEqual(c.distros.map(x => [x.po, x.file]), [['900101', 'd.pdf']]);
   c = Recap.checkBatch([d({}, 'd.pdf')], ['900101'], [], {});
@@ -127,7 +127,23 @@ test('a distro attaches to its PO, dropped with it or already in the buy; otherw
   assert.equal(c.distros.length, 0);
   assert.equal(c.refused[0].why, 'This is the distro for PO 900150, which isn\'t among the POs dropped. PO 900150 is in “Marmaxx buy 10/23”: add the distro there.');
   c = Recap.checkBatch([d({ po: '900150' }, 'd.pdf')], ['900101'], [], {});
-  assert.equal(c.refused[0].why, 'This is the distro for PO 900150, which isn\'t in this buy. Drop it together with its PO.');
+  assert.deepEqual([c.refused, c.distros, c.held.map(x => [x.po, x.file, x.replaces])], [[], [], [['900150', 'd.pdf', undefined]]], 'no PO 900150 anywhere: it waits');
+  c = Recap.checkBatch([d({ po: '900150' }, 'd.pdf')], [], [], {});
+  assert.deepEqual(c.held.map(x => x.po), ['900150'], 'dropped alone for a new buy: it waits');
+});
+
+test('a distro waiting for its PO: a newer one replaces it, the same one is a copy, an older or a different same-version one is refused', () => {
+  const waiting = [{ po: '900150', distro: d({ po: '900150', version: 2 }).distro }];
+  const held = c => [c.held.map(x => [x.po, x.distro.version, x.replaces]), c.refused.map(x => x.why), c.notes];
+  assert.deepEqual(held(Recap.checkBatch([d({ po: '900150', version: 3 }, 'v3.pdf')], [], [], {}, waiting)), [[['900150', 3, 2]], [], []]);
+  assert.deepEqual(held(Recap.checkBatch([d({ po: '900150', version: 2 }, 'v2.pdf')], [], [], {}, waiting)), [[], [], ['The distro for PO 900150 is already waiting for its PO.']]);
+  assert.deepEqual(held(Recap.checkBatch([d({ po: '900150', version: 1 }, 'v1.pdf')], [], [], {}, waiting)),
+    [[], ["Version 2 of PO 900150's distro is already waiting for its PO; this is version 1."], []]);
+  const other = d({ po: '900150', version: 2, lines: [{ ...DLINES[0], total: 480, units: { 881: 96, 884: 96, 886: 96, 887: 96, 888: 96 } }] }, 'odd.pdf');
+  assert.deepEqual(held(Recap.checkBatch([other], [], [], {}, waiting))[1],
+    ['A different distro for PO 900150 with the same version (2) is already waiting for its PO. A re-sent distro should carry a higher version.']);
+  // its PO arriving is the page's business (it attaches the waiting one after the save): the check leaves it alone
+  assert.deepEqual(held(Recap.checkBatch([p({ po: '900150' }, 'po.pdf')], [], [], {}, waiting)), [[], [], []]);
 });
 
 test('distro versions: the newest of several is used, a newer one replaces, an older or a different same-version one is refused', () => {

@@ -602,7 +602,10 @@
   // A PO that carries a version (Burlington's "po version") and is already in this buy is replaced by a newer version
   // (accepted with replaces: the version it replaces); the same or an older version is refused. A PO without one is
   // refused when it's already in the buy, as before.
-  function checkBatch(results, here, others, hasDistro) {
+  // A distro whose PO isn't in this buy, isn't among the POs dropped and isn't in another buy is held: it waits for its
+  // PO (held: [{ file, po, distro, replaces }]). waiting: [{ po, distro }], the customer's distros already waiting; a
+  // held one goes by the same version rules against them as against a PO's own distro.
+  function checkBatch(results, here, others, hasDistro, waiting) {
     const refused = [], notes = [], groups = new Map();
     const inBuy = new Map((here || []).map(h => typeof h === 'string' ? [h, 0] : [h.po, h.version || 0]));
     for (const r of results) {
@@ -646,7 +649,7 @@
     const dgroups = new Map();
     for (const r of results) if (r.distro) { const g = dgroups.get(r.distro.po) || []; g.push(r); dgroups.set(r.distro.po, g); }
     const vOf = d => d.version || 0, vName = d => vOf(d) ? 'version ' + vOf(d) : 'unnumbered';
-    const distros = [];
+    const distros = [], held = [];
     for (const [no, g] of dgroups) {
       g.sort((a, b) => vOf(b.distro) - vOf(a.distro));
       const topV = vOf(g[0].distro), tops = g.filter(r => vOf(r.distro) === topV), older = g.filter(r => vOf(r.distro) < topV);
@@ -662,8 +665,26 @@
       for (const r of older) notes.push(`${r.file} is ${vName(r.distro)} of PO ${no}'s distro; ${vName(top.distro)} (${top.file}) is the one used.`);
       if (!poHere.has(no)) {
         const other = (others || []).find(b => (b.pos || []).includes(no));
-        refused.push({ file: top.file, po: no, why: `This is the distro for PO ${no}, which isn't ${(here || []).length ? 'in this buy' : 'among the POs dropped'}.` +
-          (other ? ` PO ${no} is in “${other.name}”: add the distro there.` : ' Drop it together with its PO.') });
+        if (other) {
+          refused.push({ file: top.file, po: no, why: `This is the distro for PO ${no}, which isn't ${(here || []).length ? 'in this buy' : 'among the POs dropped'}. PO ${no} is in “${other.name}”: add the distro there.` });
+          continue;
+        }
+        // its PO hasn't come yet: it waits for it, unless a newer or different one is waiting already
+        const w = (waiting || []).find(x => x.po === no);
+        if (w) {
+          const tv = vOf(top.distro), wv = vOf(w.distro);
+          if (tv < wv) { refused.push({ file: top.file, po: no, why: `Version ${wv} of PO ${no}'s distro is already waiting for its PO; this is ${vName(top.distro)}.` }); continue; }
+          if (tv === wv) {
+            if (!sameDistro(w.distro, top.distro))
+              refused.push({ file: top.file, po: no, why: `A different distro for PO ${no}${wv ? ' with the same version (' + wv + ')' : ''} is already waiting for its PO. A re-sent distro should carry a higher version.` });
+            else if (richer(top.distro, w.distro)) held.push({ file: top.file, po: no, distro: top.distro, replaces: wv || 'unnumbered' });
+            else notes.push(`The distro for PO ${no} is already waiting for its PO.`);
+            continue;
+          }
+          held.push({ file: top.file, po: no, distro: top.distro, replaces: wv || 'unnumbered' });
+          continue;
+        }
+        held.push({ file: top.file, po: no, distro: top.distro });
         continue;
       }
       // against the one the PO has: a newer version replaces it whatever it says; the same version only when it's the
@@ -683,8 +704,9 @@
       } else distros.push({ file: top.file, po: no, distro: top.distro });
     }
     distros.sort((a, b) => byNo(a.po, b.po));
+    held.sort((a, b) => byNo(a.po, b.po));
     refused.sort((a, b) => byNo(a.po, b.po) || String(a.file).localeCompare(String(b.file)));
-    return { accepted, refused, notes, distros };
+    return { accepted, refused, notes, distros, held };
   }
   // what a distro's lines say, for telling two copies apart: every line's style, pack, total and DC units (a DC with 0
   // is the same as a blank one)
@@ -1275,7 +1297,7 @@
   }
 
   return { CUSTOMERS, TONES, COPY_V, customer, labelOf, ticketText, read, readSheet, readMarmaxx, readMarmaxxDistro, readDistroSheet, readBurlington, posOf, isDistroPages, rows, checkBatch,
-           flags, distroIssues, parseMaster, masterPack, masterSays, compactMaster, expandMaster, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig, dmy,
+           flags, distroIssues, sameDistro, richer, parseMaster, masterPack, masterSays, compactMaster, expandMaster, packIssues, packCell, excelDate, fobLabel, fobIsLA, distroSig, dmy,
            recap, cellText, cellTip, variantsTip, worksheet, distroSheet, sheetName, defaultName,
            int, num, iso, md, mdy, fmt, money, words, colName };
 });
